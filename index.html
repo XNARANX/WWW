@@ -7,13 +7,11 @@
 <title>XNAR</title>
 <style>
   :root{
-    --bg:#161616; --fg:#e0e0e0; --dim:#8a8a8a; --acc:#4caf50;
-    --you:#7fc8ff; --panel:#1f1f1f; --line:#2c2c2c;
+    --bg:#161616; --fg:#e0e0e0; --acc:#4caf50;
   }
   *{ box-sizing:border-box; }
   html, body{
-    height:100%; margin:0;
-    background:var(--bg); color:var(--fg);
+    height:100%; margin:0; background:var(--bg); color:var(--fg);
     font:16px/1.45 system-ui, sans-serif;
   }
   body{
@@ -24,20 +22,36 @@
   }
   .logo{
     font-family: Consolas, "Courier New", monospace;
-    font-weight: 700;
-    letter-spacing: .18em;
+    font-weight: 700; letter-spacing: .18em;
     color: var(--acc);
     font-size: clamp(48px, 18vw, 160px);
-    line-height: 1;
-    text-align: center;
-    user-select: none;
-    -webkit-user-select: none;
-    /* мягкое свечение в тон акцента */
+    line-height: 1; text-align: center;
+    user-select: none; -webkit-user-select: none;
+  }
+  .logo span{
+    display: inline-block;
+    animation: neon 2.6s ease-in-out infinite;
     text-shadow: 0 0 24px rgba(76,175,80,.25);
+  }
+  /* сдвиг фазы у каждой буквы, чтобы мерцали не синхронно */
+  .logo span:nth-child(1){ animation-delay: 0s; }
+  .logo span:nth-child(2){ animation-delay: .18s; }
+  .logo span:nth-child(3){ animation-delay: .36s; }
+  .logo span:nth-child(4){ animation-delay: .54s; }
+
+  @keyframes neon{
+    0%, 100%{ opacity: 1; text-shadow: 0 0 24px rgba(76,175,80,.25); }
+    40%{ opacity: .5; text-shadow: 0 0 4px rgba(76,175,80,.08); }
+    60%{ opacity: .95; text-shadow: 0 0 30px rgba(76,175,80,.40); }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .logo span{ animation: none; }
   }
 </style>
 </head>
 <body>
-  <div class="logo" role="heading" aria-level="1">XNAR</div>
+  <div class="logo" role="heading" aria-level="1">
+    <span>X</span><span>N</span><span>A</span><span>R</span>
+  </div>
 </body>
 </html>
