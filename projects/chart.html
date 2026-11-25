@@ -1,0 +1,830 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Чарты значимости</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+/* Layout concept: бетонная плита с жирными линейками; панель тегов сверху, под ней ранжированные полосы; оранжевый только для опорных позиций и выбранных тегов */
+:root{
+  --bg:#d8d8d2;
+  --panel:#e6e6e0;
+  --ink:#151515;
+  --mut:#585853;
+  --rule:#151515;
+  --accent:#e0540c;
+  --t2:#151515;
+  --t3:#6a6a64;
+  --t4:#a9a9a2;
+  --track:rgba(0,0,0,.09);
+  --sans:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141515;--panel:#1c1d1d;--ink:#ecece6;--mut:#9b9b94;--rule:#ecece6;
+    --accent:#ff7a2e;--t2:#ecece6;--t3:#9b9b94;--t4:#56564f;--track:rgba(255,255,255,.09);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141515;--panel:#1c1d1d;--ink:#ecece6;--mut:#9b9b94;--rule:#ecece6;
+  --accent:#ff7a2e;--t2:#ecece6;--t3:#9b9b94;--t4:#56564f;--track:rgba(255,255,255,.09);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.35;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:28px 56px;
+}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-size:clamp(30px,6vw,52px);line-height:1;text-transform:uppercase;letter-spacing:.02em;font-weight:700;margin:0 0 14px;text-wrap:balance}
+.lede{max-width:66ch;color:var(--mut);margin:0 0 20px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 18px}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.legend i{display:inline-block;width:14px;height:10px}
+
+.ctl{border-top:6px solid var(--rule);background:var(--panel);padding:14px 16px 16px;margin:0 0 26px}
+.ctl h2{margin:0 0 4px;font-size:clamp(18px,3vw,24px);text-transform:uppercase;letter-spacing:.03em;font-weight:700}
+.ctl p.hint{margin:0 0 12px;color:var(--mut);font-size:14px;max-width:70ch}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.chip{font:600 13px var(--sans);color:var(--ink);background:transparent;border:2px solid var(--rule);padding:3px 8px;cursor:pointer;display:inline-flex;gap:6px;align-items:baseline;text-align:left}
+.chip small{font:400 11px var(--mono);color:var(--mut)}
+.chip:hover,.chip:focus-visible{outline:none;background:var(--track)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.chip[aria-pressed="true"] small{color:var(--bg);opacity:.75}
+.seg{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin:0 0 8px;font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.seg .grp{display:inline-flex;gap:0;border:2px solid var(--rule)}
+.seg button{font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.04em;background:transparent;color:var(--ink);border:0;padding:5px 10px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.reset{font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.04em;background:transparent;color:var(--ink);border:2px solid var(--rule);padding:4px 10px;cursor:pointer}
+.reset:hover,.reset:focus-visible{background:var(--ink);color:var(--bg);outline:none}
+.picked{margin:6px 0 0;padding:0;list-style:none;display:grid;gap:3px;font-size:14px}
+.picked b{font-weight:700}
+.picked span{color:var(--mut)}
+
+.nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 30px;padding:0;list-style:none}
+.nav a{display:block;border:2px solid var(--rule);padding:3px 9px;color:var(--ink);text-decoration:none;font-size:13px;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.nav a:hover,.nav a:focus-visible{background:var(--ink);color:var(--bg);outline:none}
+
+section.cat{border-top:6px solid var(--rule);background:var(--panel);margin:0 0 30px;padding:14px 16px 18px}
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 16px;margin:0 0 4px}
+h2.ct{margin:0;font-size:clamp(20px,3.6vw,28px);text-transform:uppercase;letter-spacing:.03em;font-weight:700}
+.meta{font-family:var(--mono);font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.def{margin:0 0 14px;color:var(--mut);font-size:14px;max-width:72ch}
+ol{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+li.row{display:grid;grid-template-columns:2.6ch minmax(0,1fr) auto;column-gap:10px;align-items:baseline}
+.rk{font-family:var(--mono);font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
+.nm{min-width:0;overflow-wrap:anywhere;font-weight:600}
+.sub{display:flex;flex-wrap:wrap;gap:0 8px;font:400 11px var(--mono);color:var(--mut);margin-top:1px;font-weight:400}
+.sub .on{color:var(--ink);font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.star{color:var(--accent);font-weight:600}
+.sc{font-family:var(--mono);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.bar{grid-column:2 / 4;height:9px;background:var(--track);margin-top:3px}
+.bar b{display:block;height:100%}
+.t1 b{background:var(--accent)}
+.t2 b{background:var(--t2)}
+.t3 b{background:var(--t3)}
+.t4 b{background:var(--t4)}
+.more{margin-top:14px;font:600 13px var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--ink);background:transparent;border:2px solid var(--rule);padding:6px 12px;cursor:pointer}
+.more:hover,.more:focus-visible{background:var(--ink);color:var(--bg);outline:none}
+li.extra[hidden]{display:none!important}
+.empty{padding:10px 0;color:var(--mut)}
+.foot{border-top:2px solid var(--rule);padding-top:14px;color:var(--mut);font-size:13px;max-width:74ch}
+@media (max-width:520px){body{font-size:14px}section.cat,.ctl{padding:12px 12px 16px}}
+</style>
+
+</head><body><div class="wrap">
+  <h1>Чарты значимости</h1>
+  <p class="lede">Десять категорий, в каждой не меньше 50 позиций, отсортированных по значимости для своей категории. Выбери до трёх тегов, и страница покажет, что относится к этому сочетанию, с рекомендациями под тебя.</p>
+
+  <div class="ctl" id="ctl">
+    <h2>Фильтр по тегам</h2>
+    <p class="hint">Нажми до трёх тегов. Четвёртый вытеснит самый старый. В скобках сколько позиций у тега.</p>
+    <div class="chips" id="chips"></div>
+    <div class="seg">
+      <span>Совпадение</span>
+      <span class="grp" id="modeGrp">
+        <button type="button" id="mAll" aria-pressed="true">Все выбранные</button>
+        <button type="button" id="mAny" aria-pressed="false">Любой из них</button>
+      </span>
+      <span>Сортировка</span>
+      <span class="grp" id="sortGrp">
+        <button type="button" id="sSig" aria-pressed="true">По значимости</button>
+        <button type="button" id="sYou" aria-pressed="false">Для тебя</button>
+      </span>
+      <button type="button" class="reset" id="reset">Сбросить теги</button>
+    </div>
+    <ul class="picked" id="picked"></ul>
+  </div>
+
+  <div class="legend" aria-label="Шкала">
+    <span><i style="background:var(--accent)"></i>90–100 опорные</span>
+    <span><i style="background:var(--t2)"></i>75–89 сильные</span>
+    <span><i style="background:var(--t3)"></i>55–74 заметные</span>
+    <span><i style="background:var(--t4)"></i>до 54 нишевые</span>
+  </div>
+  <ul class="nav" id="nav"></ul>
+  <div id="charts"></div>
+  <p class="foot">Все оценки мои, экспертные, по шкале 0–100, точность порядка ±5–10 пунктов. Значимость отвечает на вопрос, насколько позиция важна для самой области. «Для тебя» это среднее значимости и близости к твоим вкусам: у каждого тега свой вес по тому, что ты называл любимым, а звёздочкой ★ помечены позиции, которые ты отметил сам (они получают добавку). Названия и факты из моих знаний, без проверки по источникам. Музыка, игры и всё, что ты отверг, в списки не входят.</p>
+</div>
+
+<script>
+var TAGS=[
+["br","Брутализм","Архитектура и графика честного материала: бетон, вес, отсутствие украшений.",1],
+["mn","Минимализм","Отказ от лишнего ради ясности: меньше элементов, больше функции.",.7],
+["lt","Лоу-тек","Простые, доступные технологии вместо сложных и дорогих.",1],
+["diy","DIY","Сделай сам: вещь собирается вручную из того, что есть.",1],
+["gl","Глитч","Эстетика сбоя: ошибки, артефакты, повреждённый сигнал как красота.",.7],
+["dc","Деконструктивизм","Разрушение привычной формы: сдвиг, конфликт, нестабильность.",.8],
+["rf","Ретрофутуризм","Будущее, каким его представляли в прошлом.",.9],
+["cp","Киберпанк","Грязное высокотехнологичное будущее: терминалы, корпорации, улица.",.7],
+["nc","Нормкор","Антиэстетика незаметности: намеренная «никакость» и удобство.",.5],
+["in","Индустриальность","Шум, металл и механизм как материал и ритм.",.9],
+["sm","Советский модернизм","Функциональная архитектура и техника СССР: бетон, панели, инженерная воля.",.9],
+["sp","Космическая эпоха","Эстетика ранней космонавтики: модули, скафандры, плакаты.",.8],
+["au","Авторитарная техника","Формальный язык техники тоталитарных режимов: масштаб, дисциплина, контроль.",.4],
+["fn","Функционализм","Форма следует функции: ничего лишнего, всё оправдано задачей.",1],
+["og","Органический дизайн","Текучие природные формы в технике и предметах.",.3],
+["ex","Уход от масс","Сознательное дистанцирование от толпы и мейнстрима.",.9],
+["dk","Тёмное просвещение","Трезвость без утешения: разум без оптимизма и ложного света.",.6],
+["si","Простота","Минимум элементов и действий для решения задачи.",.9],
+["bd","Бюджетность","Дёшево и доступно без потери функции.",.9],
+["sf","Суперфункциональность","Максимум функций в минимуме объёма.",1],
+["mm","Микромобильность","Маленькие персональные средства передвижения.",1],
+["uc","Ультракомпактность","Предельная миниатюрность и складность.",1],
+["md","Модульность","Сборка из блоков, которые можно менять и комбинировать.",1],
+["ju","Соединение несоединяемого","Сознательное столкновение несовместимых элементов.",1],
+["ge","Генеративность","Система, которая сама порождает варианты по заданным правилам.",.9]
+];
+
+/* формат позиции: «название|значимость|теги|*» — звёздочка значит, что пользователь отметил сам */
+var CATS=[
+{id:"transport",title:"Транспорт гражданский",def:"малые, лёгкие и утилитарные гражданские машины: влияние на то, как строят и используют компактный транспорт.",items:[
+"Honda Super Cub|98|fn si bd mm",
+"Алек Иссигонис (Mini)|96|fn uc sf si|*",
+"Коррадино д'Асканьо (Vespa, Ape)|93|fn mm bd si|*",
+"Citroën 2CV|92|lt bd si fn",
+"Land Rover Series I|90|fn lt in si mn",
+"Colin Chapman / Lotus Seven|88|mn fn si lt",
+"Apollo Lunar Roving Vehicle|84|sp uc fn sf mn",
+"Renault 4|82|fn bd si",
+"Fiat Panda (1980)|80|fn bd si nc",
+"Isetta и Messerschmitt|80|uc mm rf",
+"Луноход|78|sp sm fn br",
+"ВАЗ-2121 «Нива»|78|sm fn si br",
+"kei-трак (Suzuki Carry, Subaru Sambar)|76|uc bd fn mm",
+"Honda «Man Maximum, Machine Minimum»|72|fn sf uc",
+"Smart Fortwo (Tridion)|70|uc mm md",
+"УАЗ-452 «Буханка»|70|sm fn lt br",
+"Tata Nano|68|bd si mm",
+"Trabant|66|sm lt bd br",
+"Citroën Ami|66|md si bd mm|*",
+"Citroën H Van|64|in fn rf br",
+"Ariel Atom|62|mn fn in|*",
+"kei-спорткары (AZ-1, Beat, Cappuccino)|62|uc sf mm",
+"Citroën Méhari|62|lt bd fn si mn|*",
+"Mini Moke / Fiat Jolly / VW Type 181|60|lt si fn mn",
+"Gordon Murray (T.25)|58|uc sf mm|*",
+"Renault Twizy|58|mm uc si",
+"Microlino|56|mm uc rf|*",
+"Майк Бёрроуз|56|mm sf fn|*",
+"Argo 8×8|55|ju fn lt br|*",
+"Sinclair C5|54|mm rf bd",
+"Nissan Pike Factory|54|rf uc|*",
+"Amphicar|52|ju rf",
+"ЗАЗ-965|52|sm bd uc",
+"Веломобили и велолежаки|50|mm diy fn",
+"Daihatsu Midget|50|uc mm lt",
+"Honda Motocompo|48|uc sf mm",
+"Goggomobil|48|uc bd",
+"Mochet Velocar|46|lt mm bd",
+"Fiat Multipla (1956)|46|uc sf fn",
+"Peel P50|44|uc mm",
+"Aktiv Snow-Trac|44|fn lt mn",
+"Alleweder|42|diy lt mm",
+"Velorex|40|lt sm bd",
+"Gibbs Quadski|40|ju sf",
+"OSVehicle Tabby|38|md diy|*",
+"Bond Bug|36|rf mm",
+"Zündapp Janus|36|uc ju",
+"Doof Wagon|35|ju in",
+"Fiat 500 (Nuova)|74|uc bd si mm","Suzuki Jimny (SJ)|60|uc fn lt","Citroën Dyane|40|lt bd si","Bandit9 Monaco|30|rf mm|*"]},
+
+{id:"military",title:"Военные и спецмашины",def:"нетипичная военная и спецтехника: малые, гусеничные, вездеходные, дистанционные и десантные машины. Не танки и не стандартные джипы, а странные узкоспециализированные носители.",items:[
+"Kettenkrad (Sd.Kfz. 2)|96|uc ju fn au mn si|*",
+"Goliath (Leichter Ladungsträger)|88|uc ju au dk mn si|*",
+"Hägglunds Bv206|86|in fn md br",
+"Kugelpanzer|80|ju dk ex au mn og|*",
+"ЛуАЗ-967 (транспортёр)|80|sm fn lt br si|*",
+"Mule M274|80|uc lt fn mn si",
+"Welbike|80|uc mm lt mn si bd",
+"Vespa 150 TAP (десантная)|78|uc mm ju fn",
+"Sherp|76|ju fn in br si|*",
+"Unimog|76|fn md in br",
+"M29 Weasel|74|uc in lt fn si",
+"ЗИЛ-29061 (шнекоход)|72|sm ju in br dc",
+"Borgward B IV|70|ju au in br fn",
+"Schwimmwagen (Typ 166)|72|ju fn si mn",
+"Kübelwagen|70|fn lt si mn",
+"Aerosani (аэросани)|68|sm ju in rf mn",
+"Carden-Loyd Mk VI|68|uc in dk mn fn",
+"ЛуАЗ-969 (вездеход)|66|sm lt fn br si|*",
+"ГАЗ-46 МАВ|66|sm ju lt fn br",
+"Jeep Mighty Mite M422|66|uc lt fn mn si",
+"Cushman Model 53 Airborne|66|uc mm mn si",
+"Pinzgauer|66|fn lt in br",
+"Урал М-72 / BMW R75 с ведущей коляской|66|fn in ju br",
+"Gama Goat|64|ju in fn br dc",
+"Kégresse (полугусеница)|64|in ju lt fn",
+"Land Rover 109 Lightweight (десантный)|62|uc fn lt mn",
+"Bren Carrier|60|uc in fn br",
+"Daimler Dingo|60|uc fn mn",
+"ЗИЛ-49061 «Синяя птица»|60|sm ju in br",
+"Alvis Stalwart|60|in ju fn br",
+"Экраноплан «Лунь»|58|sm au in sp br",
+"Tucker Sno-Cat|58|in fn lt br",
+"Телетанк ТТ-26|58|sm ju gl dc",
+"PackBot|58|uc fn cp mn",
+"МТ-ЛБ|56|sm fn md br",
+"Springer (Sd.Kfz. 304)|56|ju au mn",
+"Zündapp KS 750|56|in fn mn",
+"Ontos|54|ju in br dc",
+"ПТС-М|52|sm in br fn",
+"Polaris MRZR|52|mm lt fn mn",
+"Hardiman (Дженерал Электрик)|52|in sf ju dc",
+"Т-27 (танкетка)|50|sm uc mn fn",
+"Мотонарты «Буран»|50|sm lt fn mn si",
+"Sd.Kfz. 3 Maultier|48|ju in br",
+"Foster-Miller TALON|48|uc fn mn",
+"VW Iltis|46|fn lt mn si",
+"Dragon Wagon (M123)|44|fn in br",
+"Mini-Moke (десантный вариант)|42|uc lt fn mn",
+"LS3 (робот-мул)|46|cp in ju dc",
+"Т-37А (плавающая танкетка)|44|sm ju uc mn"]},
+
+{id:"autonomy",title:"Пилотируемые машины и автономность",def:"связка человека и системы, которая частично действует сама: пилоты, автопилоты, открытые стеки и роботы.",items:[
+"ROS 2|92|md ge sf",
+"DARPA Grand Challenge (2004–2007)|86|ge sf",
+"PX4|86|md ge",
+"ArduPilot Rover|85|diy md ge",
+"FPV-дроны|80|mm diy sf",
+"Марсоходы (Sojourner, Spirit, Curiosity)|80|sp fn sf",
+"Shakey the Robot (SRI)|78|rf ge",
+"Pixhawk|78|md diy sf",
+"openpilot|76|diy bd sf",
+"DJI (потребительские дроны)|74|mm uc sf",
+"Waymo Driver|74|sf cp",
+"Betaflight и iNav|72|diy bd md",
+"Roomba|72|nc fn si",
+"Ingenuity (вертолёт на Марсе)|70|sp uc sf",
+"Gossamer Albatross|70|lt uc fn",
+"ExpressLRS|66|diy bd si",
+"CARLA|66|ge md",
+"Черепахи Грея Уолтера|66|ge lt rf",
+"Autoware|62|md ge",
+"TurtleBot|62|md bd diy",
+"EHang 216|62|sf rf cp",
+"MAVLink|62|md si",
+"Starship|58|mm uc",
+"Volocopter|58|sf rf",
+"Saildrone|58|ge fn",
+"Bell Rocket Belt|58|sp rf ju",
+"NVIDIA Jetson|58|uc md sf",
+"Segway PT|58|mm si",
+"Zoox|56|md fn",
+"QGroundControl|54|md si",
+"Boston Dynamics Spot|54|cp in sf",
+"Sarcos Guardian XO|52|in sf cp",
+"Gazebo / Webots|52|ge md",
+"Jetson ONE|50|mm uc sf",
+"JPL Open Source Rover|50|diy md lt",
+"ПрОП-М (советский марсоход)|50|sm sp lt",
+"F1TENTH|48|diy ge md",
+"Gravity Industries|46|uc sf ju",
+"Donkey Car|44|diy bd ge",
+"Lift HEXA|44|mm uc",
+"Opener BlackFly|42|mm uc",
+"Kitty Hawk Flyer|40|mm uc",
+"Kuratas|40|cp in ju",
+"Duckietown|40|diy md ge",
+"Blue Robotics (BlueBoat)|40|md diy",
+"Hoversurf|38|mm cp",
+"Hyundai Elevate|36|ju cp sf",
+"Sawppy rover|36|diy bd md",
+"Archax|34|cp in",
+"comma body|28|diy bd"]},
+
+{id:"cinema",title:"Кино",def:"фильмы и сериалы, повлиявшие на визуальный язык техники и будущего.",items:[
+"2001: Космическая одиссея|99|mn sp rf",
+"Метрополис (1927)|97|rf au in",
+"Бегущий по лезвию|96|cp rf dk",
+"Сталкер (1979)|96|sm dk ex in",
+"Чужой|95|rf in dk",
+"Солярис (Тарковский)|90|sp rf dk ex",
+"Akira|88|cp in dc",
+"Ghost in the Shell (1995)|86|cp",
+"Человек с киноаппаратом|84|dc ju",
+"Кин-дза-дза!|82|sm ju lt ex",
+"Aelita (1924)|80|sm rf dc sp",
+"The Matrix|80|cp gl",
+"Mad Max 2|78|in ju lt dk",
+"Tron (1982)|76|rf cp gl",
+"Brazil|74|rf au dk",
+"Playtime (Тати)|74|mn fn dc",
+"Чернобыль (HBO)|70|sm in dk au",
+"Dune (2021)|70|br au sp",
+"Serial Experiments Lain|70|gl cp ex dk",
+"La Jetée|70|mn dk",
+"THX 1138|66|au mn rf",
+"Alphaville|66|rf cp au",
+"Stranger Things|66|rf",
+"Blade Runner 2049|66|br cp dk",
+"Fantastic Planet|66|ju dc ex",
+"Silent Running|64|sp rf ex",
+"Dark Star|62|sp lt rf",
+"Westworld (1973)|62|rf cp",
+"Severance|62|rf au mn dk",
+"Dark City|60|rf cp dk",
+"Moon (2009)|58|rf sp ex|*",
+"Туманность Андромеды|58|sm sp rf",
+"Mon Oncle|58|rf fn",
+"Fallout (сериал)|56|rf cp",
+"Soylent Green|56|dk rf",
+"Космический рейс (1936)|56|sm sp rf",
+"Sunshine (2007)|56|sp in",
+"Через тернии к звёздам|55|sm sp",
+"Pi (1998)|55|gl dk ex",
+"High-Rise (2015)|54|br au dk",
+"Тайна третьей планеты|54|sm sp rf",
+"The Brutalist (2024)|52|br mn",
+"Москва — Кассиопея|52|sm sp",
+"Rollerball (1975)|52|au rf",
+"Cube (1997)|52|br mn ju",
+"Colossus: The Forbin Project|52|au rf cp",
+"Планета бурь|52|sm sp",
+"Отель «У погибшего альпиниста»|50|sm rf dk",
+"Мечте навстречу|48|sm sp",
+"Texhnolyze|46|cp in dk ex"]},
+
+{id:"books",title:"Книги и мысль",def:"тексты и мыслители о технике, системах, ремесле и странном: вклад в то, как мы думаем о машинах.",items:[
+"Норберт Винер «Кибернетика»|96|ge fn",
+"Стругацкие «Пикник на обочине»|92|sm dk ex in",
+"Хайдеггер «Вопрос о технике»|92|dk",
+"Маклюэн «Understanding Media»|92|ju",
+"Лем «Солярис»|90|sp dk ex",
+"Борхес «Вавилонская библиотека»|90|ge dk ex",
+"Гибсон «Нейромант»|90|cp",
+"Ницше «Так говорил Заратустра»|88|dk ex",
+"Кристофер Александер «A Pattern Language»|88|md ge fn",
+"фон Нейман «Self-Reproducing Automata»|88|ge",
+"Замятин «Мы»|86|au dk",
+"Шопенгауэр «Мир как воля и представление»|86|dk ex",
+"Мамфорд «Technics and Civilization»|84|fn",
+"Ле Гуин «The Dispossessed»|84|lt ex",
+"Хофштадтер «Gödel, Escher, Bach»|82|ge ju",
+"Жак Эллюль «The Technological Society»|80|dk",
+"Пирсиг «Zen and the Art of Motorcycle Maintenance»|80|fn diy ex",
+"Платонов «Котлован»|80|sm dk ju",
+"Пинчон «Радуга тяготения»|80|dk ju dc ex",
+"Лем «Summa Technologiae»|78|ge dk sp|*",
+"Шумахер «Small Is Beautiful»|78|lt si",
+"Brand «Whole Earth Catalog»|78|diy lt md",
+"Беньямин «Произведение искусства в эпоху...»|78|ju dk",
+"Иллич «Tools for Conviviality»|76|lt diy",
+"Papanek «Design for the Real World»|76|fn lt",
+"Мёбиус|72|rf cp",
+"Philip K. Dick «Ubik»|70|dk ju gl",
+"Стивенсон «Snow Crash»|70|cp",
+"Марк Фишер «The Weird and the Eerie»|68|dk ex",
+"Лем «Cyberiad»|66|ju ge",
+"Хаким Бей «Temporary Autonomous Zone»|66|ex diy",
+"Тед Нельсон «Computer Lib / Dream Machines»|66|diy ju",
+"Sennett «The Craftsman»|66|diy fn",
+"Braitenberg «Vehicles»|66|ge si",
+"Лем «Непобедимый»|66|ge sp dk",
+"Христиан Чоран «Искушение существованием»|66|dk ex",
+"Кристофер Александер «The Timeless Way of Building»|66|diy md fn",
+"Вольфрам «A New Kind of Science»|62|ge",
+"Кевин Келли «What Technology Wants»|62|ju",
+"Cybersyn / Стаффорд Бир|62|ge sm",
+"Lloyd Kahn «Shelter»|62|diy lt bd",
+"Лем «Golem XIV»|60|dk ju",
+"Флюссер «Into the Universe of Technical Images»|58|ju",
+"Brand «How Buildings Learn»|58|md fn",
+"Стерлинг «Schismatrix»|56|cp ju",
+"Стивенсон «In the Beginning... Was the Command Line»|56|lt diy ex",
+"CCCP: Cosmic Communist Constructions Photographed|54|sm br sp",
+"Crawford «Shop Class as Soulcraft»|52|diy fn",
+"Хервиг «Soviet Bus Stops»|46|sm br fn",
+"Столенхаг «The Electric State»|44|rf in"]},
+
+{id:"designers",title:"Дизайнеры, художники, архитекторы",def:"люди и школы, изменившие форму, конструкцию, графику и образ будущего.",items:[
+"Ле Корбюзье (Cabanon)|94|br fn uc",
+"Лисицкий и Родченко|92|dc sm",
+"Бакминстер Фуллер|90|md sf lt",
+"Нам Джун Пайк|88|ju gl",
+"Фрай Отто|88|lt og fn",
+"Шухов|86|sm fn lt",
+"Татлин («Летатлин»)|86|sm dc",
+"High-tech (Роджерс, Пиано, Помпиду)|84|in fn md",
+"Archigram|84|md rf ju",
+"Жан Пруве|84|md fn lt",
+"Нерви|82|br fn",
+"Метаболизм и Nakagin Capsule Tower|82|md uc br",
+"Бруно Мунари|82|ju fn lt",
+"Акилле Кастильони|78|fn ju lt",
+"Superstudio|78|mn dc",
+"Wim Crouwel|76|mn ge",
+"Лина Бо Барди|76|br fn",
+"Антонио Сант'Элиа|76|rf in",
+"Жан Тэнгли|74|ju in lt dc",
+"Бексиньский и Гигер|74|dk ex og",
+"Седрик Прайс|74|md ju",
+"Нейрат и Арнц (Isotype)|72|mn fn si",
+"Дэвид Карсон|68|gl dc",
+"Молнар и Наке|68|ge mn",
+"Habitat 67|68|md br",
+"Eurostile и Microgramma|66|rf sp",
+"Archizoom|66|dc md",
+"Coop Himmelb(l)au|66|dc",
+"Пьер Шаро|66|in fn md",
+"Невилл Броуди|66|gl dc",
+"Лебеус Вудс|66|dc cp dk",
+"Йона Фридман|64|md diy lt",
+"Рон Кобб|62|rf in",
+"Конрад Вахсманн|62|md fn",
+"Яков Чернихов|62|sm in rf dc",
+"Бофилл (Walden 7)|60|br au",
+"Крис Фосс|60|rf in",
+"ВНИИТЭ|60|sm fn",
+"Бродский и Уткин|60|dc dk ex",
+"Энки Билал|60|dk ex cp",
+"Виктор Антонов|56|sm rf",
+"Жан-Клод Мезьер|54|rf",
+"Роза Менкман|52|gl dc",
+"Цутому Нихэй «BLAME!»|52|br cp dk",
+"Паоло Солери|52|og diy",
+"Чертёжный шрифт ГОСТ|50|sm fn si",
+"Интерьеры «Союза» и «Мира»|48|sm sp uc sf",
+"Тим Хантин|46|diy ju lt",
+"Борис Арцыбашев|46|ju in",
+"Питер Элсон|46|rf",
+"Концепт-арт СТАЛКЕРа и Half-Life|42|sm dk",
+"Гэвин Ротери|36|rf",
+"Ральф Бэкер|36|ge ju"]},
+
+{id:"styles",title:"Стили и направления",def:"эстетические школы и приёмы: влияние на то, как выглядят вещи и как о них говорят.",items:[
+"Конструктивизм (как стиль)|94|sm dc fn",
+"Функциональный брутализм|92|br fn",
+"Bauhaus|92|fn mn",
+"Киберпанк (визуальный язык)|92|cp in dk",
+"Итальянский футуризм|86|rf in dc",
+"Русский авангард|84|sm dc",
+"Glitch art|84|gl dc",
+"Супрематизм|82|mn dc",
+"Ассамбляж и junk art|80|diy ju bd",
+"Dada|80|ju dc gl",
+"Arte povera|78|lt bd diy",
+"Кинетическое искусство|78|ju ge in",
+"De Stijl|78|mn fn",
+"Ретрофутуризм (как стиль)|78|rf sp",
+"Hard sci-fi|74|sp rf",
+"Деконструктивизм|74|dc",
+"Space Age design|74|sp rf",
+"Хай-тек (стиль)|74|in fn md",
+"Wabi-sabi|72|og lt mn si",
+"Генеративное и алгоритмическое искусство|72|ge mn",
+"Продуктивизм|72|sm fn in",
+"Low-tech|70|lt bd si",
+"Советский космизм|70|sm sp",
+"Used future|66|rf in dk",
+"Blueprint (эстетика чертежа)|66|fn mn",
+"Systems art|66|ge md",
+"Fluxus|66|ju dc ge",
+"Mid-century modern|66|fn mn",
+"Neo-brutalist web design|66|br gl mn",
+"Streamline Moderne|66|rf fn og",
+"Workwear / utility|64|fn lt nc",
+"Kitbashing и бриколаж|62|diy ju bd",
+"Кибернетическое искусство 1960-х|62|ge rf",
+"Нормкор|62|nc mn",
+"Биомеханика|62|og cp dk",
+"Cassette futurism|60|rf cp in",
+"Самострой (русский DIY)|58|diy lt bd",
+"Брутализм в графике|58|br gl mn",
+"Постапокалиптический реализм|56|dk in lt",
+"TUI / командная строка (эстетика)|56|mn cp lt",
+"Restomod / sleeper|54|rf ju",
+"Industrial vernacular|54|in lt fn",
+"Zine / ксерокс-панк|54|diy gl bd",
+"Lo-fi sci-fi|52|rf diy lt",
+"Военный трафарет и маркировка|52|in au fn",
+"Dieselpunk|50|rf in",
+"Эстетика мануала и схемы|50|fn mn",
+"Ostalgie|48|sm",
+"Atompunk|46|rf sp",
+"Weirdcore и liminal spaces|40|gl dk"]},
+
+{id:"electronics",title:"Железо и электроника",def:"платформы, инструменты и компьютеры, на которых строят самодельное и открытое железо.",items:[
+"Arduino|92|diy bd md",
+"Raspberry Pi (одноплатный компьютер)|92|diy bd",
+"KiCad|90|diy md",
+"ESP32|90|bd uc sf",
+"Радиолюбительство и SDR|86|diy bd|*",
+"JLCPCB / PCBWay (заказ плат)|86|bd diy",
+"Raspberry Pi Pico (RP2040)|84|bd uc diy",
+"OpenWrt|76|diy ju bd",
+"MicroPython / CircuitPython|74|si bd diy",
+"Радио-86РК и журнал «Радио»|72|sm diy bd",
+"STM32 (Blue Pill)|70|bd sf",
+"Open Source Hardware (OSHWA)|70|diy md",
+"GNU Radio|66|ge md",
+"Meshtastic / LoRa|66|uc bd diy md|*",
+"Мотор-колёса (hub motors)|66|mm md",
+"Tang Nano и iCE40|62|md ge",
+"ODrive|62|diy md",
+"Ben Eater (компьютер на 6502)|62|diy lt si",
+"Карл Симс|62|ge",
+"Raspberry Pi Zero|62|uc bd",
+"Недорогой осциллограф (Hantek, Rigol)|62|bd diy",
+"DIY-батареи и точечная сварка|60|diy bd md",
+"Детекторный приёмник|60|lt si diy bd",
+"Серии К155 и К561|60|sm diy",
+"Forrest Mims, Engineer's Mini-Notebooks|60|diy lt bd",
+"M5Stack|58|md uc",
+"БК-0010|58|sm rf",
+"Телетайп ASR-33|58|rf in",
+"Home Assistant|58|md diy",
+"Паяльная станция T12|58|bd diy",
+"«Электроника МК-61» и МК-52|58|sm rf uc",
+"SimpleFOC|56|diy md",
+"hoverboard-firmware-hack|56|diy bd ju",
+"TouchDesigner|56|ge gl",
+"Teensy|56|sf uc",
+"FreeRTOS|56|md si",
+"Контроллеры BLDC (Sabvoton, Kelly)|54|mm diy",
+"CAN-шина (MCP2515)|52|md",
+"Cyberdeck|52|cp diy ju uc",
+"«Электроника ИМ-02»|50|sm rf uc",
+"Модули Nissan Leaf|48|diy bd md",
+"«Специалист» и «Орион-128»|46|sm diy",
+"Лампы ИН-12|44|sm rf",
+"E-ink дисплеи (Waveshare)|44|mn uc",
+"Digispark / ATtiny85|42|uc bd",
+"RC2014|42|diy md",
+"LilyGO T-Deck|40|uc sf",
+"Плоттер из CD/DVD-приводов|40|diy ju bd ge",
+"«Корвет»|38|sm",
+"Glasgow Interface Explorer|34|md diy"]},
+
+{id:"workshop",title:"Мастерская и ремесло",def:"методы и услуги обработки материалов: насколько фундаментален приём для практики.",items:[
+"FreeCAD и Fusion 360|88|diy fn",
+"Заказ деталей (лазерная резка, гибка)|86|md bd fn",
+"Настольный токарный станок|84|diy uc fn|*",
+"Хакерспейс / фаблаб|84|diy md bd",
+"TIG-сварка алюминия|82|diy fn|*",
+"Сварочный инвертор (MMA/MIG, сталь)|82|diy bd fn",
+"FDM-печать для прототипов|80|diy bd",
+"Болгарка (УШМ)|78|diy bd lt",
+"Самодельное ЧПУ|76|diy bd|*",
+"Измерение и разметка|74|fn si",
+"Трубогиб|72|diy fn",
+"Ленточная пила по металлу|72|diy fn",
+"Плазморез|70|diy in",
+"T-slot алюминиевый профиль|70|md diy",
+"Цепные и ременные передачи (расчёт)|70|fn si",
+"Профильная труба как материал рамы|70|diy lt bd",
+"Сверлильный станок|70|diy lt",
+"Подбор подшипниковых узлов UCP|66|fn md",
+"Ручной листогиб|66|diy lt",
+"Порошковая покраска|66|in fn",
+"Расчёт прочности (FEA)|66|fn ge",
+"Фанера как конструкционный материал|66|lt bd diy",
+"Тиски и верстак|66|lt diy",
+"Алюминий на заклёпках и уголках|64|diy md lt",
+"MIG-сварка алюминия с катушкой|62|diy fn",
+"Мини-фрезерный станок|62|diy uc",
+"Монтаж проводки (обжим, термоусадка, оплётка)|62|fn",
+"Почасовая аренда мастерской|60|bd diy",
+"Резьбонарезание (метчики, плашки)|60|fn lt",
+"Эпоксид и стеклоткань|60|diy",
+"Окраска эмалью (молотковая, шагрень)|60|in lt",
+"Ручная формовка листа|58|diy lt",
+"Электролодка (малый формат)|58|mm lt diy|*",
+"Анодирование алюминия|56|fn in",
+"Английское колесо|56|diy lt",
+"Искусственное старение и патина|56|rf lt",
+"Заклёпочные гайки (nutserts)|54|md fn",
+"Герметизация корпусов (IP65)|54|fn",
+"Мини-ЧПУ 3018|52|diy uc bd",
+"Литьё алюминия (мини-литейка)|52|diy lt",
+"Пескоструй|52|in",
+"Шелкография и трафаретная печать|50|diy lt gl",
+"Складные конструкции и шарниры|50|uc md sf",
+"Гидроабразивная резка (заказ)|50|fn",
+"Лазерная гравировка диодным лазером|48|diy bd",
+"Ручной деревообрабатывающий инструмент|48|lt diy",
+"Библиотека инструментов|46|bd md",
+"Советские токарные станки (ТВ-4, ТВ-16)|46|sm lt",
+"Фототравление шильдиков|44|diy lt",
+"eFoil|42|mm sf"]},
+
+{id:"sources",title:"Сайты, авторы, журналы",def:"ресурсы и авторы, у которых учатся: охват, глубина и влияние на самодельную культуру.",items:[
+"Archive.org (сканы журналов и мануалов)|92|bd",
+"Hackaday|90|diy ju",
+"Хабр|82|diy",
+"Popular Mechanics|82|diy rf",
+"Make:|80|diy lt",
+"Техника — молодёжи|80|sm sp rf",
+"Instructables|78|diy bd",
+"EEVblog|78|diy",
+"Electronics StackExchange|76|diy",
+"Adafruit Learning System|76|diy md",
+"Изобретатель и рационализатор|74|sm diy",
+"Practical Engineering|72|fn",
+"Моделист-конструктор|72|sm diy mm",
+"Юный техник|72|sm diy",
+"Hackaday.io|70|diy md",
+"Endless-sphere|70|mm diy",
+"VESC Project|68|mm diy md",
+"SparkFun|66|diy md",
+"Applied Science|66|diy",
+"Technology Connections|66|fn si",
+"Printables / Thingiverse|66|diy md",
+"Наука и жизнь|66|sm",
+"AlexGyver|64|diy bd",
+"Hackster.io|62|diy",
+"Радиокот|62|diy sm",
+"Real Engineering|62|fn",
+"r/ebikes|62|mm diy bd",
+"За рулём|62|sm",
+"Drive2 (бортжурналы)|60|diy",
+"This Old Tony|60|diy fn",
+"Adam Savage's Tested|58|diy",
+"Big Clive|56|diy bd",
+"Colin Furze|56|diy ju",
+"OpenBuilds|56|diy md",
+"Stuff Made Here|54|ge ju",
+"Mr. Carlson's Lab|52|rf diy",
+"Brutalist Websites|52|br gl mn",
+"Сэм Зелуф|52|diy ge",
+"Виртуальный компьютерный музей|52|sm rf",
+"GrabCAD|52|md",
+"Mechanix Illustrated|52|rf diy",
+"Evil Mad Scientist Laboratories|50|diy ge",
+"Strange Parts|50|diy bd ex",
+"Posy|46|rf",
+"Cathode Ray Dude|46|rf",
+"Retrocomputing StackExchange|46|rf",
+"DIY Electric Car Forum|44|diy mm",
+"Pololu|40|md diy",
+"Dangerous Prototypes|40|diy",
+"Taras Kul|36|mm diy"]}
+];
+
+/* ---------- разбор данных ---------- */
+var TW={},TN={},TD={},TCOUNT={},ALL=[];
+TAGS.forEach(function(t){TW[t[0]]=t[3];TN[t[0]]=t[1];TD[t[0]]=t[2];TCOUNT[t[0]]=0});
+var BAD=[];
+CATS.forEach(function(c){
+  c.list=c.items.map(function(s,i){
+    var p=s.split("|"),tg=p[2].trim().split(/\s+/),sc=+p[1],w=0;
+    tg.forEach(function(t){if(TW[t]==null){BAD.push(p[0]+":"+t)}else{w+=TW[t];TCOUNT[t]++}});
+    w=w/tg.length;
+    var liked=p[3]==="*",fit=Math.min(100,Math.round(w*100)+(liked?8:0));
+    var it={n:p[0],sig:sc,tags:tg,liked:liked,fit:fit,you:Math.round((sc+fit)/2),cat:c.title,cid:c.id,i:i};
+    ALL.push(it);return it;
+  });
+});
+
+/* ---------- состояние ---------- */
+var sel=[],mode="all",sortBy="sig",sortTouched=false;
+var TOP_CAT=10,TOP_RES=20;
+
+function $(id){return document.getElementById(id)}
+function mk(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
+function tier(s){return s>=90?"t1":s>=75?"t2":s>=55?"t3":"t4"}
+function median(a){var b=a.slice().sort(function(x,y){return x-y}),m=b.length>>1;return b.length%2?b[m]:Math.round((b[m-1]+b[m])/2)}
+function matchCount(it){var m=0;sel.forEach(function(t){if(it.tags.indexOf(t)>=0)m++});return m}
+
+function buildRow(it,k,hide,showCat){
+  var met=sortBy==="you"?it.you:it.sig;
+  var r=mk("li","row "+tier(met)+(hide?" extra":""));
+  if(hide)r.hidden=true;
+  r.appendChild(mk("span","rk",k+1));
+  var nm=mk("span","nm");nm.appendChild(document.createTextNode(it.n));
+  var sub=mk("div","sub");
+  if(showCat)sub.appendChild(mk("span",null,it.cat));
+  sub.appendChild(mk("span",null,"знач "+it.sig));
+  sub.appendChild(mk("span",null,"тебе "+it.you));
+  if(it.liked)sub.appendChild(mk("span","star","★ ты отметил"));
+  it.tags.forEach(function(t){sub.appendChild(mk("span",sel.indexOf(t)>=0?"on":null,TN[t]))});
+  nm.appendChild(sub);r.appendChild(nm);
+  r.appendChild(mk("span","sc",met));
+  var bar=mk("div","bar"),b=document.createElement("b");b.style.width=met+"%";bar.appendChild(b);r.appendChild(bar);
+  return r;
+}
+function addExpander(sec,ol,total,limit,id){
+  if(total<=limit)return;
+  var open=false,btn=mk("button","more");btn.type="button";btn.id=id;
+  function label(){btn.textContent=open?"Свернуть":"Показать все "+total}
+  label();
+  btn.addEventListener("click",function(){
+    open=!open;
+    Array.prototype.forEach.call(ol.querySelectorAll("li.extra"),function(e){e.hidden=!open});
+    label();
+  });
+  sec.appendChild(btn);
+}
+function sortKey(list){
+  var key=sortBy==="you"?"you":"sig";
+  return list.slice().sort(function(a,b){
+    var d=0;
+    if(sel.length&&mode==="any")d=matchCount(b)-matchCount(a);
+    return d||b[key]-a[key]||a.i-b.i;
+  });
+}
+
+function renderCats(){
+  var nav=$("nav"),root=$("charts");nav.innerHTML="";root.innerHTML="";nav.hidden=false;
+  CATS.forEach(function(c){
+    var li=mk("li"),a=mk("a",null,c.title);a.href="#"+c.id;li.appendChild(a);nav.appendChild(li);
+    var items=sortKey(c.list);
+    var sec=mk("section","cat");sec.id=c.id;
+    var head=mk("div","head");head.appendChild(mk("h2","ct",c.title));
+    head.appendChild(mk("div","meta",items.length+" позиций · медиана "+median(items.map(function(x){return sortBy==="you"?x.you:x.sig}))));
+    sec.appendChild(head);
+    sec.appendChild(mk("p","def",(sortBy==="you"?"Для тебя: среднее значимости и близости к твоим вкусам. ":"Значимость: ")+(sortBy==="you"?"":c.def)));
+    var ol=mk("ol");
+    items.forEach(function(it,k){ol.appendChild(buildRow(it,k,k>=TOP_CAT,false))});
+    sec.appendChild(ol);addExpander(sec,ol,items.length,TOP_CAT,"more-"+c.id);
+    root.appendChild(sec);
+  });
+}
+function renderFiltered(){
+  var nav=$("nav"),root=$("charts");nav.innerHTML="";nav.hidden=true;root.innerHTML="";
+  var res=ALL.filter(function(it){var m=matchCount(it);return mode==="all"?m===sel.length:m>0});
+  res=sortKey(res);
+  var sec=mk("section","cat");sec.id="result";
+  var head=mk("div","head");
+  head.appendChild(mk("h2","ct",sel.map(function(t){return TN[t]}).join(" + ")));
+  head.appendChild(mk("div","meta",res.length+" позиций из "+ALL.length));
+  sec.appendChild(head);
+  sec.appendChild(mk("p","def",(mode==="all"?"Позиции, у которых есть все выбранные теги. ":"Позиции, у которых есть хотя бы один выбранный тег; больше совпадений значит выше. ")+(sortBy==="you"?"Порядок: для тебя (среднее значимости и близости к твоим вкусам).":"Порядок: значимость в своей категории.")));
+  if(!res.length){
+    sec.appendChild(mk("p","empty","Сочетание слишком редкое: ничего не нашлось. Убери один тег или переключи на «Любой из них»."));
+  }else{
+    var ol=mk("ol");
+    res.forEach(function(it,k){ol.appendChild(buildRow(it,k,k>=TOP_RES,true))});
+    sec.appendChild(ol);addExpander(sec,ol,res.length,TOP_RES,"more-result");
+  }
+  root.appendChild(sec);
+}
+
+function renderChips(){
+  var box=$("chips");box.innerHTML="";
+  TAGS.forEach(function(t){
+    var b=mk("button","chip");b.type="button";b.id="tag-"+t[0];b.title=t[2];
+    b.setAttribute("aria-pressed",String(sel.indexOf(t[0])>=0));
+    b.appendChild(document.createTextNode(t[1]));b.appendChild(mk("small",null,TCOUNT[t[0]]));
+    b.addEventListener("click",function(){toggleTag(t[0])});
+    box.appendChild(b);
+  });
+}
+function renderPicked(){
+  var ul=$("picked");ul.innerHTML="";
+  sel.forEach(function(t){
+    var li=mk("li");li.appendChild(mk("b",null,TN[t]));li.appendChild(mk("span",null," — "+TD[t]));ul.appendChild(li);
+  });
+}
+function syncCtl(){
+  $("mAll").setAttribute("aria-pressed",String(mode==="all"));
+  $("mAny").setAttribute("aria-pressed",String(mode==="any"));
+  $("sSig").setAttribute("aria-pressed",String(sortBy==="sig"));
+  $("sYou").setAttribute("aria-pressed",String(sortBy==="you"));
+  Array.prototype.forEach.call($("chips").children,function(b){b.setAttribute("aria-pressed",String(sel.indexOf(b.id.slice(4))>=0))});
+  $("mAll").disabled=$("mAny").disabled=false;
+  $("reset").hidden=!sel.length;
+}
+function render(){
+  syncCtl();renderPicked();
+  if(sel.length)renderFiltered();else renderCats();
+}
+function toggleTag(t){
+  var i=sel.indexOf(t);
+  if(i>=0)sel.splice(i,1);
+  else{sel.push(t);if(sel.length>3)sel.shift();}
+  if(sel.length&&!sortTouched)sortBy="you";
+  if(!sel.length&&!sortTouched)sortBy="sig";
+  render();
+}
+$("mAll").addEventListener("click",function(){mode="all";render()});
+$("mAny").addEventListener("click",function(){mode="any";render()});
+$("sSig").addEventListener("click",function(){sortBy="sig";sortTouched=true;render()});
+$("sYou").addEventListener("click",function(){sortBy="you";sortTouched=true;render()});
+$("reset").addEventListener("click",function(){sel=[];if(!sortTouched)sortBy="sig";render()});
+if(BAD.length&&window.console)console.error("Неизвестные теги:",BAD.join(", "));
+renderChips();render();
+</script>
+</body></html>

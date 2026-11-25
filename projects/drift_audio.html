@@ -1,0 +1,2046 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Drift</title>
+<style>
+  html,body{margin:0;height:100%;background:#03040b;color:#9fb4d0;font-family:ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100%;height:100%}
+  #start{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;
+         letter-spacing:.42em;font-size:12px;text-transform:uppercase;transition:opacity 2.5s;user-select:none;z-index:5;
+         color:#b9d6ff;text-shadow:0 0 18px rgba(110,200,255,.55)}
+  #start.hide{opacity:0;pointer-events:none}
+  #ui{position:fixed;left:0;right:0;bottom:26px;display:flex;justify-content:center;gap:16px;
+      opacity:0;pointer-events:none;transition:opacity 2s;z-index:4}
+  #ui.show{opacity:1;pointer-events:auto}
+  #ui button{background:rgba(10,16,34,.5);color:#a8c4e6;border:1px solid rgba(120,190,255,.28);border-radius:999px;
+             padding:11px 28px;font:inherit;font-size:12px;letter-spacing:.2em;text-transform:uppercase;cursor:pointer;
+             backdrop-filter:blur(6px);box-shadow:inset 0 0 22px rgba(80,160,255,.08);
+             transition:background .25s,color .25s,border-color .25s,box-shadow .25s}
+  #ui button:hover{border-color:rgba(140,230,255,.7);color:#e6f6ff;box-shadow:0 0 22px rgba(80,200,255,.25)}
+  #ui button.on{background:rgba(110,230,255,.22);color:#fff;border-color:#8fe9ff;box-shadow:0 0 28px rgba(110,230,255,.45)}
+  #info{position:fixed;left:18px;top:14px;right:18px;font-size:11px;letter-spacing:.12em;color:#6f87a8;
+        opacity:0;transition:opacity 2s;user-select:none;z-index:4;line-height:1.7;pointer-events:none}
+  #info.show{opacity:1}
+  #scene{position:fixed;right:18px;top:48px;max-width:min(62vw,560px);text-align:right;font-size:17px;letter-spacing:.16em;
+         color:#c9ebff;text-shadow:0 0 16px rgba(110,200,255,.5);opacity:0;transition:opacity 1.6s;user-select:none;z-index:4;
+         pointer-events:none;line-height:1.35;font-style:italic}
+  #scene.show{opacity:.92}
+  @media (max-width:620px){#scene{font-size:14px;letter-spacing:.1em;top:62px}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info"></div>
+<div id="scene"></div>
+<div id="ui"><button id="no">дальше</button><button id="yes">нравится</button></div>
+<div id="start">нажми, чтобы начать</div>
+
+<script>
+(() => {
+  // ---------- утилиты ----------
+  const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const expMap = (v, lo, hi) => lo * Math.pow(hi / lo, v);
+  const linMap = (v, lo, hi) => lo + (hi - lo) * v;
+  const randInt = n => Math.floor(Math.random() * n);
+  const pick = a => a[randInt(a.length)];
+  const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+  const gauss = () => {
+    let u = 0, v = 0;
+    while (!u) u = Math.random();
+    while (!v) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+
+  // ---------- музыкальные данные ----------
+  const MOODS = [
+    { n: 'лидийский',         pcs: [0, 2, 4, 6, 7, 9, 11] },
+    { n: 'светлый мажор',     pcs: [0, 2, 4, 5, 7, 9, 11] },
+    { n: 'тёмный минор',      pcs: [0, 2, 3, 5, 7, 8, 10] },
+    { n: 'пустые кварты',     pcs: [0, 2, 5, 7, 9] },
+    { n: 'дорийский',         pcs: [0, 2, 3, 5, 7, 9, 10] },
+    { n: 'фригийский',        pcs: [0, 1, 3, 5, 7, 8, 10] },
+    { n: 'миксолидийский',    pcs: [0, 2, 4, 5, 7, 9, 10] },
+    { n: 'пентатоника минор', pcs: [0, 3, 5, 7, 10] },
+    { n: 'целотонный',        pcs: [0, 2, 4, 6, 8, 10] },
+    { n: 'гарм. минор',       pcs: [0, 2, 3, 5, 7, 8, 11] },
+  ];
+  const JAZZ = [0, 1, 4, 6];
+  const PROGS = [[1, 4, 0, 0], [0, 5, 1, 4], [0, 3, 1, 4], [2, 5, 1, 4], [0, 2, 3, 4], [3, 4, 2, 5]];
+  const NOTES = ['до', 'до♯', 'ре', 'ре♯', 'ми', 'фа', 'фа♯', 'соль', 'соль♯', 'ля', 'ля♯', 'си'];
+  const LAYERS = ['bass', 'hum', 'breath', 'water', 'wind', 'metal', 'grain',
+                  'pad', 'bells', 'glass', 'muzak', 'elevator', 'micro', 'glitch', 'arp', 'bseq', 'ind', 'dungeon', 'berlin', 'lofi', 'krell'];
+  const LNAMES = ['бас-дрон', 'гул', 'дыхание', 'вода', 'ветер', 'металл', 'гранулы',
+                  'пэды', 'колокола', 'стекло', 'музак', 'элеватор', 'микро-минимализм', 'глитч',
+                  'космические арпеджио', 'вибрирующий бас-секвенсор',
+                  'индастриал', 'dungeon synth', 'берлинская школа', 'lofi / vapour', 'крелл-патч'];
+  // основные стили: звучит один (на пике плотности два), между ними плавный кроссфейд
+  const MAINS = ['pad', 'bass', 'elevator', 'muzak', 'micro', 'glitch', 'bells', 'glass', 'arp', 'bseq', 'ind', 'dungeon', 'berlin', 'lofi', 'krell'];
+  // фон: шумы и призвуки, подмешиваются тихо поверх основного стиля
+  const TEXTS = ['hum', 'breath', 'water', 'wind', 'metal', 'grain'];
+  const BUSBASE = { bass: 1, hum: 0.4, breath: 0.45, water: 0.6, wind: 0.6, metal: 1.8, grain: 1.4,
+                    pad: 1.7, bells: 1.8, glass: 1.8, muzak: 1, elevator: 1, micro: 1.1, glitch: 1.5, arp: 2.2, bseq: 0.9, ind: 1.2, dungeon: 0.95, berlin: 0.85, lofi: 0.55, krell: 2.0 };
+  const LWEIGHT = { bass: 1, hum: 1, breath: 1, water: 1, wind: 1, metal: 1, grain: 1,
+                    pad: 1.2, bells: 1.1, glass: 1, muzak: 0.9, elevator: 0.9, micro: 1, glitch: 0.6, arp: 1.3, bseq: 1.3, ind: 1.1, dungeon: 1.1, berlin: 1.2, lofi: 1.2, krell: 1.3 };
+  const WNAMES = ['синус', 'пила', 'полая', 'орган', 'стекло', 'язычок', 'кларнет', 'яркая', 'пустая', 'шершавая'];
+  const scaleNote = (sc, idx) => {
+    const n = sc.length, o = Math.floor(idx / n), i = ((idx % n) + n) % n;
+    return sc[i] + 12 * o;
+  };
+  const spaceName = s => s < 0.1 ? 'глухая студия' : s < 0.3 ? 'камерная комната' : s < 0.55 ? 'зал'
+                       : s < 0.8 ? 'большой зал' : 'кафедрал';
+
+  // ---------- параметры (вектор в [0..1]) ----------
+  const NAMES = ['bassCut', 'bassLvl', 'bassDet',
+                 'wCenter', 'wQ', 'wLvl', 'wRate', 'wColor',
+                 'mLvl', 'mQ', 'mSpread', 'mBase', 'mColor',
+                 'gDens', 'gSize', 'gPitch', 'gPos', 'gLvl', 'gSrc',
+                 'hum', 'brQ', 'brColor', 'wnCenter', 'wnColor',
+                 'glDens',
+                 'dTime', 'dFb', 'dWet', 'rWet',
+                 'padCut', 'padOct', 'padDens'];
+  const P = {};
+  NAMES.forEach(n => { const v = rnd(0.25, 0.75); P[n] = { v, t: v, rate: 0.01 }; });
+  ['bassLvl', 'wLvl', 'mLvl', 'gLvl'].forEach(n => P[n].v = P[n].t = 0.55);
+  P.rWet.v = P.rWet.t = 0.6;
+
+  // =====================================================
+  //   ВИЗУАЛИЗАЦИЯ: радиальная гистограмма параметров, спектр в центре
+  // =====================================================
+  const V = { s: null, pulses: [] };
+  V.pulse = kind => V.pulses.push({ t0: performance.now(), kind });
+  (() => {
+    const cv = document.getElementById('c'), g = cv.getContext('2d');
+    let w = 0, h = 0;
+    const stars = Array.from({ length: 180 }, () => ({ x: Math.random(), y: Math.random(), r: rnd(0.5, 1.5), p: rnd(0, 6.28), f: rnd(0.2, 1.2) }));
+    function resize() {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      w = innerWidth; h = innerHeight;
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    addEventListener('resize', resize); resize();
+
+    const FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace';
+    const COL = { main: [188, 90, 66], tex: [268, 85, 76], par: [158, 68, 64], pitch: [305, 78, 78] };
+    const hsl = (c, a, dh = 0, dl = 0) => `hsla(${c[0] + dh},${c[1]}%,${clamp(c[2] + dl, 0, 100)}%,${a})`;
+    const wcache = new Map();
+    const textW = (str, px) => {
+      const k = px + '|' + str; let v = wcache.get(k);
+      if (v === undefined) { g.font = `${px}px ${FONT}`; v = g.measureText(str).width; wcache.set(k, v); }
+      return v;
+    };
+    const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+    const M = 144;
+    let disp = [], rootA = null, sp = null, ripples = [], frameN = 0, rmsS = 0, last = performance.now();
+    const absVis = new Float32Array(12);
+
+    function circle(cx, cy, r) { g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); }
+
+    function draw(now) {
+      requestAnimationFrame(draw);
+      const dt = Math.min(0.1, Math.max(0.001, (now - last) / 1000)); last = now; frameN++;
+      const t = now / 1000, s = V.s;
+      const topPad = 42, botPad = w > 620 ? 72 : 84, availH = Math.max(200, h - topPad - botPad);
+      const D = Math.min(w, availH), cx = w / 2, cy = topPad + availH / 2, sc = clamp(D / 900, 0.55, 1.15);
+      if (s) rmsS += (s.rms() - rmsS) * 0.05;
+      const energy = clamp(rmsS * 6);
+
+      // ---- космический фон: туманности, виньетка, звёзды ----
+      g.globalCompositeOperation = 'source-over';
+      g.fillStyle = '#03040b'; g.fillRect(0, 0, w, h);
+      const blobs = [
+        [0.28 + 0.10 * Math.sin(t * 0.05), 0.32 + 0.08 * Math.cos(t * 0.04), 0.62, [252, 75, 26], 0.55],
+        [0.74 + 0.08 * Math.cos(t * 0.045), 0.66 + 0.10 * Math.sin(t * 0.05), 0.55, [188, 85, 24], 0.45],
+        [0.50 + 0.14 * Math.sin(t * 0.03), 0.92, 0.50, [310, 70, 26], 0.38]];
+      for (const [bx, by, br, c, a] of blobs) {
+        const X = bx * w, Y = by * h, rr = br * Math.max(w, h);
+        const gr = g.createRadialGradient(X, Y, 0, X, Y, rr);
+        gr.addColorStop(0, `hsla(${c[0]},${c[1]}%,${c[2]}%,${a * (0.8 + 0.5 * energy)})`);
+        gr.addColorStop(1, `hsla(${c[0]},${c[1]}%,${c[2]}%,0)`);
+        g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      }
+      const vg = g.createRadialGradient(cx, cy, D * 0.3, cx, cy, Math.max(w, h) * 0.75);
+      vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.6)');
+      g.fillStyle = vg; g.fillRect(0, 0, w, h);
+      for (const st of stars) {
+        const a = 0.2 + 0.5 * (0.5 + 0.5 * Math.sin(t * st.f + st.p));
+        g.fillStyle = `rgba(200,222,255,${a})`;
+        g.fillRect(((st.x + t * 0.002 * st.r) % 1) * w, st.y * h, st.r, st.r);
+      }
+
+      // ---- до старта: только мягкая «орбита» ----
+      if (!s) {
+        const r0 = D * 0.11 * (1 + 0.06 * Math.sin(t * 0.8));
+        const og = g.createRadialGradient(cx, cy, 0, cx, cy, r0 * 2.2);
+        og.addColorStop(0, 'hsla(190,90%,70%,0.35)'); og.addColorStop(1, 'hsla(270,80%,60%,0)');
+        g.fillStyle = og; circle(cx, cy, r0 * 2.2); g.fill();
+        g.strokeStyle = 'hsla(190,90%,75%,0.35)'; g.lineWidth = 1; circle(cx, cy, r0); g.stroke();
+        g.setLineDash([2, 7]); g.lineDashOffset = -t * 6; g.strokeStyle = 'hsla(300,80%,80%,0.25)'; circle(cx, cy, r0 * 1.5); g.stroke(); g.setLineDash([]);
+        return;
+      }
+
+      // ---- геометрия колец ----
+      const items = s.items, N = items.length;
+      const Rout = D / 2 - 10 * sc, lab = 112 * sc;
+      const rb1 = Rout - lab, rb0 = rb1 * 0.5;
+      const rPitch = rb0 * 0.86, rSpec = rb0 * 0.46, spMax = rb0 * 0.34;
+      const hue = s.hue();
+
+      if (disp.length !== N) disp = items.map(it => it.val());
+      const kd = 1 - Math.exp(-dt / 0.22);
+      for (let i = 0; i < N; i++) disp[i] += (items[i].val() - disp[i]) * kd;
+
+      // ---- каркас: окружности, риски ----
+      g.lineWidth = 1;
+      g.strokeStyle = 'rgba(150,185,255,0.10)'; circle(cx, cy, rb0); g.stroke(); circle(cx, cy, rb1); g.stroke();
+      g.strokeStyle = 'rgba(150,185,255,0.045)'; circle(cx, cy, (rb0 + rb1) / 2); g.stroke();
+      const nTick = 120;
+      for (let i = 0; i < nTick; i++) {
+        const aa = (i / nTick) * Math.PI * 2 + t * 0.008, long = i % 10 === 0;
+        const r0 = rb1 + 3 * sc, r1 = r0 + (long ? 7 : 3.5) * sc;
+        g.strokeStyle = long ? 'rgba(160,200,255,0.34)' : 'rgba(160,200,255,0.16)';
+        g.beginPath(); g.moveTo(cx + Math.cos(aa) * r0, cy + Math.sin(aa) * r0); g.lineTo(cx + Math.cos(aa) * r1, cy + Math.sin(aa) * r1); g.stroke();
+      }
+
+      // ---- радиальная гистограмма: сегментные столбцы с целью и стрелкой направления ----
+      const slot = (Math.PI * 2) / N, nseg = 14, len = rb1 - rb0, segL = len / nseg;
+      const bw = clamp(rb0 * slot * 0.3, 2.2, 10);
+      g.lineCap = 'butt';
+      for (let i = 0; i < N; i++) {
+        const it = items[i], a = -Math.PI / 2 + (i + 0.5) * slot, ca = Math.cos(a), sa = Math.sin(a);
+        const v = clamp(disp[i]), tv = clamp(it.tgt()), col = COL[it.group], px = -sa, py = ca;
+        g.globalCompositeOperation = 'source-over';
+        g.lineWidth = 1; g.strokeStyle = hsl(col, 0.06);
+        g.beginPath(); g.moveTo(cx + ca * rb0, cy + sa * rb0); g.lineTo(cx + ca * rb1, cy + sa * rb1); g.stroke();
+        g.lineWidth = bw;
+        for (let k = 0; k < nseg; k++) {
+          const lit = clamp(v * nseg - k);
+          const r0 = rb0 + k * segL + 0.8, r1 = rb0 + (k + 1) * segL - 2;
+          g.strokeStyle = lit > 0 ? hsl(col, 0.22 + 0.7 * lit, k * 2.2, 4 * lit) : hsl(col, 0.07);
+          g.beginPath(); g.moveTo(cx + ca * r0, cy + sa * r0); g.lineTo(cx + ca * r1, cy + sa * r1); g.stroke();
+        }
+        const tipR = rb0 + len * v;
+        if (v > 0.02) {
+          g.globalCompositeOperation = 'lighter';
+          g.lineWidth = bw * 2.6; g.strokeStyle = hsl(col, 0.05 + 0.06 * v);
+          g.beginPath(); g.moveTo(cx + ca * rb0, cy + sa * rb0); g.lineTo(cx + ca * tipR, cy + sa * tipR); g.stroke();
+          g.fillStyle = hsl(col, 0.95, 0, 14); circle(cx + ca * tipR, cy + sa * tipR, bw * 0.55); g.fill();
+          g.globalCompositeOperation = 'source-over';
+        }
+        // цель: засечка + стрелка «растёт / падает»
+        const rt = rb0 + len * tv, diff = tv - v, moving = Math.abs(diff) > 0.03, mw = bw * 0.95;
+        g.lineWidth = 1.4; g.strokeStyle = `hsla(0,0%,100%,${moving ? 0.8 : 0.26})`;
+        g.beginPath(); g.moveTo(cx + ca * rt - px * mw, cy + sa * rt - py * mw); g.lineTo(cx + ca * rt + px * mw, cy + sa * rt + py * mw); g.stroke();
+        if (moving) {
+          const dir = diff > 0 ? 1 : -1, cc = diff > 0 ? [150, 85, 70] : [345, 88, 72];
+          g.lineWidth = 1; g.strokeStyle = hsl(cc, 0.3);
+          g.beginPath(); g.moveTo(cx + ca * tipR, cy + sa * tipR); g.lineTo(cx + ca * rt, cy + sa * rt); g.stroke();
+          const rc = rb0 + len * (v + tv) / 2, ap = rc + dir * 4.5 * sc, wr = rc - dir * 2.5 * sc, ww = 4.5 * sc;
+          g.lineWidth = 1.6; g.strokeStyle = hsl(cc, 0.5 + 0.4 * Math.sin(t * 4 + i));
+          g.beginPath();
+          g.moveTo(cx + ca * wr - px * ww, cy + sa * wr - py * ww);
+          g.lineTo(cx + ca * ap, cy + sa * ap);
+          g.lineTo(cx + ca * wr + px * ww, cy + sa * wr + py * ww);
+          g.stroke();
+        }
+        // подпись вдоль луча, читаемая в обеих половинах круга
+        const left = ca < -0.001;
+        const vs = it.fmt ? it.fmt(v) : String(Math.round(v * 100));
+        const avail = lab - 16 * sc;
+        let px0 = Math.max(8, Math.round(11 * sc)), txt = it.label + '  ' + vs;
+        if (textW(txt, px0) > avail) txt = it.label;
+        while (px0 > 7 && textW(txt, px0) > avail) px0--;
+        g.save();
+        g.translate(cx + ca * (rb1 + 13 * sc), cy + sa * (rb1 + 13 * sc));
+        g.rotate(left ? a + Math.PI : a);
+        g.font = `${px0}px ${FONT}`; g.textAlign = left ? 'right' : 'left'; g.textBaseline = 'middle';
+        g.fillStyle = hsl(col, 0.34 + 0.62 * v, 0, 14);
+        g.fillText(txt, 0, 0);
+        g.restore();
+      }
+
+      // ---- кольцо ступеней лада: «созвездие» плавно перестраивается вместе со звуком ----
+      const rootN = s.root(), cur = s.cur();
+      const rootT = -Math.PI / 2 + rootN * Math.PI / 6;
+      if (rootA === null) rootA = rootT;
+      rootA += wrap(rootT - rootA) * (1 - Math.exp(-dt / 1.0));
+      const kv = 1 - Math.exp(-dt / 0.9);
+      for (let pc = 0; pc < 12; pc++) absVis[pc] += ((cur[(((pc - rootN) % 12) + 12) % 12] ? 1 : 0) - absVis[pc]) * kv;
+      g.setLineDash([2 * sc, 6 * sc]); g.lineDashOffset = -t * 6;
+      g.strokeStyle = hsl(COL.pitch, 0.2); g.lineWidth = 1; circle(cx, cy, rPitch); g.stroke();
+      g.setLineDash([]);
+      const act = []; for (let pc = 0; pc < 12; pc++) if (absVis[pc] > 0.2) act.push(pc);
+      if (act.length > 1) {
+        g.lineWidth = 1;
+        for (let j = 0; j < act.length; j++) {
+          const p0 = act[j], p1 = act[(j + 1) % act.length];
+          const a0 = -Math.PI / 2 + p0 * Math.PI / 6, a1 = -Math.PI / 2 + p1 * Math.PI / 6;
+          g.strokeStyle = hsl(COL.pitch, 0.5 * Math.min(absVis[p0], absVis[p1]));
+          g.beginPath(); g.moveTo(cx + Math.cos(a0) * rPitch, cy + Math.sin(a0) * rPitch); g.lineTo(cx + Math.cos(a1) * rPitch, cy + Math.sin(a1) * rPitch); g.stroke();
+        }
+      }
+      const nfs = Math.max(7, Math.round(9 * sc));
+      for (let pc = 0; pc < 12; pc++) {
+        const aa = -Math.PI / 2 + pc * Math.PI / 6, vis = absVis[pc];
+        const X = cx + Math.cos(aa) * rPitch, Y = cy + Math.sin(aa) * rPitch;
+        g.fillStyle = hsl(COL.pitch, 0.18 + 0.8 * vis, 0, 10 * vis); circle(X, Y, (2 + 4.5 * vis) * sc); g.fill();
+        g.font = `${nfs}px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillStyle = hsl(COL.pitch, 0.22 + 0.6 * vis, 0, 10);
+        g.fillText(NOTES[pc], cx + Math.cos(aa) * (rPitch - 15 * sc), cy + Math.sin(aa) * (rPitch - 15 * sc));
+      }
+      {
+        const X = cx + Math.cos(rootA) * rPitch, Y = cy + Math.sin(rootA) * rPitch;
+        g.globalCompositeOperation = 'lighter';
+        const rg = g.createRadialGradient(X, Y, 0, X, Y, 20 * sc);
+        rg.addColorStop(0, hsl(COL.pitch, 0.55)); rg.addColorStop(1, hsl(COL.pitch, 0));
+        g.fillStyle = rg; circle(X, Y, 20 * sc); g.fill();
+        g.globalCompositeOperation = 'source-over';
+        g.lineWidth = 1.5; g.strokeStyle = hsl(COL.pitch, 0.95, 0, 8); circle(X, Y, 9 * sc); g.stroke();
+      }
+
+      // ---- «залип» (после лайка): дуга обратного отсчёта ----
+      const lk = s.lock();
+      if (lk > 0) {
+        const rl = (rPitch + rb0) / 2;
+        g.lineWidth = 1; g.strokeStyle = 'rgba(255,205,120,0.12)'; circle(cx, cy, rl); g.stroke();
+        g.globalCompositeOperation = 'lighter';
+        g.lineWidth = 2.2 * sc; g.strokeStyle = 'hsla(40,95%,72%,0.7)';
+        g.beginPath(); g.arc(cx, cy, rl, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * lk); g.stroke();
+        g.globalCompositeOperation = 'source-over';
+      }
+
+      // ---- центр: дышащая сфера, радиальный спектр с кругами-волнами ----
+      g.globalCompositeOperation = 'lighter';
+      const cr = rSpec * (0.95 + 0.25 * energy);
+      const cg = g.createRadialGradient(cx, cy, 0, cx, cy, cr);
+      cg.addColorStop(0, `hsla(${hue + 40},85%,62%,${0.22 + 0.18 * energy})`);
+      cg.addColorStop(1, `hsla(${hue},85%,55%,0)`);
+      g.fillStyle = cg; circle(cx, cy, cr); g.fill();
+      g.globalCompositeOperation = 'source-over';
+
+      s.an.getByteFrequencyData(s.bytes);
+      const nb = s.bytes.length;
+      if (!sp) sp = new Float32Array(M);
+      for (let j = 0; j < M; j++) {
+        const u = (j < M / 2 ? j : M - 1 - j) / (M / 2);
+        const b0 = Math.floor(expMap(u, 2, nb * 0.55)), b1 = Math.min(nb - 1, b0 + 2);
+        let a = 0; for (let b = b0; b <= b1; b++) a = Math.max(a, s.bytes[b]);
+        a /= 255;
+        sp[j] += (a - sp[j]) * (a > sp[j] ? 0.5 : 0.1);
+      }
+      if (frameN % 3 === 0) { ripples.push({ r: Float32Array.from(sp), t }); if (ripples.length > 40) ripples.shift(); }
+      const life = 1.8;
+      ripples = ripples.filter(rp => t - rp.t < life);
+      const shape = (arr, scale) => {
+        g.beginPath();
+        for (let j = 0; j < M; j++) {
+          const aa = -Math.PI / 2 + (j / M) * Math.PI * 2;
+          const r = (rSpec + Math.pow(arr[j], 1.15) * spMax) * scale;
+          const X = cx + Math.cos(aa) * r, Y = cy + Math.sin(aa) * r;
+          j ? g.lineTo(X, Y) : g.moveTo(X, Y);
+        }
+        g.closePath();
+      };
+      g.lineJoin = 'round'; g.lineWidth = 1;
+      for (const rp of ripples) {
+        const p = (t - rp.t) / life;
+        g.strokeStyle = `hsla(${hue + 30 * p},85%,72%,${0.22 * Math.pow(1 - p, 1.6)})`;
+        shape(rp.r, 1 + 0.12 * p); g.stroke();
+      }
+      const fg = g.createRadialGradient(cx, cy, rSpec * 0.4, cx, cy, rSpec + spMax);
+      fg.addColorStop(0, `hsla(${hue},85%,60%,0)`);
+      fg.addColorStop(0.5, `hsla(${hue},85%,62%,0.10)`);
+      fg.addColorStop(1, `hsla(${hue + 50},90%,70%,0.38)`);
+      shape(sp, 1); g.fillStyle = fg; g.fill();
+      g.globalCompositeOperation = 'lighter';
+      g.lineWidth = 1.5 * sc; g.strokeStyle = `hsla(${hue},90%,76%,0.9)`; g.stroke();
+      g.globalCompositeOperation = 'source-over';
+
+      // ---- центр: тоника и лад ----
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = `${Math.round(22 * sc)}px ${FONT}`;
+      g.fillStyle = 'rgba(228,240,255,0.92)';
+      g.fillText(s.note(), cx, cy - 6 * sc);
+      let mfs = Math.max(8, Math.round(10 * sc)), mood = s.mood();
+      while (mfs > 7 && textW(mood, mfs) > rSpec * 1.7) mfs--;
+      g.font = `${mfs}px ${FONT}`; g.fillStyle = 'rgba(190,215,255,0.62)';
+      g.fillText(mood, cx, cy + 14 * sc);
+      if (lk > 0) { g.fillStyle = 'rgba(255,215,140,0.85)'; g.fillText('залип', cx, cy + 28 * sc); }
+
+      // ---- волны отклика на лайк и дизлайк ----
+      V.pulses = V.pulses.filter(p => now - p.t0 < 1900);
+      for (const p of V.pulses) {
+        const q = (now - p.t0) / 1900, e = 1 - Math.pow(1 - q, 3);
+        const c = p.kind === 'like' ? [165, 85, 72] : [320, 80, 74];
+        g.lineWidth = (2.2 * (1 - q) + 0.6) * sc;
+        g.strokeStyle = hsl(c, 0.55 * Math.pow(1 - q, 1.5));
+        circle(cx, cy, lerp(rSpec * 0.7, Rout * 1.02, e)); g.stroke();
+      }
+
+      // ---- легенда ----
+      if (w > 620) {
+        const rows = [[COL.main, 'основной стиль'], [COL.tex, 'фон: шумы и призвуки'], [COL.par, 'параметры'], [COL.pitch, 'ступени лада'],
+                      [[0, 0, 100], 'белая метка — цель, стрелка — куда идёт']];
+        g.font = `10px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'middle';
+        rows.forEach(([c, label], i) => {
+          const y = h - 24 - (rows.length - 1 - i) * 16;
+          g.fillStyle = hsl(c, 0.85); g.fillRect(20, y - 3, 6, 6);
+          g.fillStyle = 'rgba(160,185,220,0.55)'; g.fillText(label, 34, y);
+        });
+      }
+    }
+    requestAnimationFrame(draw);
+  })();
+
+  let ctx, started = false;
+
+  async function start() {
+    if (started) return;
+    started = true;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    const sr = ctx.sampleRate;
+
+    // ---------- шиммер: повышатель тона на +октаву (AudioWorklet из строки) ----------
+    let shimNode = null;
+    try {
+      const code =
+        "class Shifter extends AudioWorkletProcessor{" +
+        "constructor(){super();this.buf=new Float32Array(16384);this.w=0;this.ph=0;this.W=2048;}" +
+        "process(inputs,outputs){const inp=inputs[0][0],out=outputs[0][0];if(!inp||!out)return true;" +
+        "const N=this.buf.length,W=this.W,mask=N-1;" +
+        "for(let i=0;i<out.length;i++){this.buf[this.w]=inp[i];let sum=0;" +
+        "for(let k=0;k<2;k++){const p=(this.ph+k*0.5)%1;const d=W*(1-p);let rp=this.w-d;if(rp<0)rp+=N;" +
+        "const i0=Math.floor(rp),fr=rp-i0;" +
+        "const s=this.buf[i0&mask]*(1-fr)+this.buf[(i0+1)&mask]*fr;" +
+        "sum+=s*(0.5-0.5*Math.cos(2*Math.PI*p));}" +
+        "out[i]=sum;this.w=(this.w+1)&mask;this.ph+=1/W;if(this.ph>=1)this.ph-=1;}return true;}}" +
+        "registerProcessor('shifter',Shifter);";
+      const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+      await ctx.audioWorklet.addModule(url);
+      shimNode = new AudioWorkletNode(ctx, 'shifter', {
+        numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit', outputChannelCount: [1]
+      });
+    } catch (e) { shimNode = null; }
+
+    // ---------- три цвета шума: коричневый, розовый, белый (одинаковая громкость) ----------
+    const normBuf = (buf, target) => {
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const d = buf.getChannelData(c);
+        let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+        const k = target / Math.sqrt(s / d.length + 1e-12);
+        for (let i = 0; i < d.length; i++) d[i] *= k;
+      }
+    };
+    const mkNoise = kind => {
+      const b = ctx.createBuffer(2, sr * 4, sr);
+      for (let c = 0; c < 2; c++) {
+        const d = b.getChannelData(c);
+        let b0 = 0, b1 = 0, b2 = 0, br = 0;
+        for (let i = 0; i < d.length; i++) {
+          const w = Math.random() * 2 - 1;
+          if (kind === 0) { br = (br + 0.02 * w) / 1.02; d[i] = br; }
+          else if (kind === 1) {
+            b0 = 0.99765 * b0 + w * 0.0990460;
+            b1 = 0.96300 * b1 + w * 0.2965164;
+            b2 = 0.57000 * b2 + w * 1.0526913;
+            d[i] = b0 + b1 + b2 + w * 0.1848;
+          } else d[i] = w;
+        }
+      }
+      normBuf(b, 0.2);
+      return b;
+    };
+    const NB = [mkNoise(0), mkNoise(1), mkNoise(2)];   // brown, pink, white
+
+    // источник с цветом: c = 0 коричневый → 0.5 розовый → 1 белый
+    const colorSrc = rate => {
+      const out = ctx.createGain();
+      const gains = NB.map(b => {
+        const s = ctx.createBufferSource();
+        s.buffer = b; s.loop = true; s.playbackRate.value = rate; s.start(0, rnd(0, 3));
+        const g = ctx.createGain(); g.gain.value = 0;
+        s.connect(g); g.connect(out);
+        return g;
+      });
+      return {
+        out,
+        set(c, now) {
+          const w = [clamp(1 - 2 * c), c < 0.5 ? 2 * c : 2 - 2 * c, clamp(2 * c - 1)];
+          gains.forEach((g, i) => g.gain.setTargetAtTime(w[i], now, 0.4));
+        }
+      };
+    };
+    const lfo = (freq, depth, target) => {
+      const o = ctx.createOscillator(); o.frequency.value = freq;
+      const g = ctx.createGain(); g.gain.value = depth;
+      o.connect(g); g.connect(target); o.start();
+      return o;
+    };
+
+    // ---------- банк форм волны ----------
+    const mkWave = h => {
+      const re = new Float32Array(h.length + 1), im = new Float32Array(h.length + 1);
+      for (let i = 0; i < h.length; i++) im[i + 1] = h[i];
+      return ctx.createPeriodicWave(re, im);
+    };
+    const WAVES = [
+      mkWave([1]),
+      mkWave([1, .5, .33, .25, .2, .16, .14, .12]),
+      mkWave([1, 0, .3, 0, .15, 0, .08]),
+      mkWave([1, .6, .1, .4, .05, .25]),
+      mkWave([1, 0, 0, .4, 0, 0, .3, 0, 0, .2]),
+      mkWave([1, .2, .7, .1, .5, .05, .3]),
+      mkWave([1, 0, .5, 0, 0, .3, 0, .15]),
+      mkWave([1, .9, .8, .7, .6, .5, .4, .3]),
+      mkWave([1, 0, 0, 0, .5]),
+      mkWave([1, .3, .1, .5, .2, .4, .1, .3]),
+    ];
+    const WV = { a: 0, b: 3, mix: 0.5 };
+
+    // ---------- мастер-цепь ----------
+    const mix = ctx.createGain();
+    const trim = ctx.createGain(); trim.gain.value = 1;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 22;
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18; comp.knee.value = 12; comp.ratio.value = 6;
+    comp.attack.value = 0.01; comp.release.value = 0.3;
+    const out = ctx.createGain(); out.gain.value = 0;
+    mix.connect(trim); trim.connect(hp); hp.connect(comp); comp.connect(out); out.connect(ctx.destination);
+    const an = ctx.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = 0.8;
+    comp.connect(an);
+    out.gain.setTargetAtTime(0.8, ctx.currentTime, 3);
+
+    const layerSum = ctx.createGain();       // сумма слоёв (нормируется по числу активных)
+    const dry = ctx.createGain();            // всё, что идёт в эффекты
+    const dryOut = ctx.createGain();         // сухой сигнал в мастер
+    layerSum.connect(dry); dry.connect(dryOut); dryOut.connect(mix);
+
+    const B = {};
+    LAYERS.forEach(n => { const g = ctx.createGain(); g.gain.value = 0; g.connect(layerSum); B[n] = g; });
+
+    // ---------- слой: бас-дрон ----------
+    const bassLP = ctx.createBiquadFilter(); bassLP.type = 'lowpass'; bassLP.Q.value = 4;
+    const bassOut = ctx.createGain();
+    bassLP.connect(bassOut); bassOut.connect(B.bass);
+    const bOsc = ['sawtooth', 'triangle', 'sawtooth', 'sine'].map(t => {
+      const o = ctx.createOscillator(); o.type = t; o.frequency.value = 50; o.start();
+      const g = ctx.createGain(); g.gain.value = 0.28;
+      o.connect(g); g.connect(bassLP);
+      return o;
+    });
+    lfo(0.07, 150, bassLP.frequency);
+
+    // ---------- слой: гармонический гул (аддитивный орган из обертонов) ----------
+    const humOut = ctx.createGain(); humOut.connect(B.hum);
+    const humO = [], humG = [];
+    for (let i = 0; i < 8; i++) {
+      const o = ctx.createOscillator(); o.frequency.value = 100 * (i + 1); o.detune.value = rnd(-4, 4); o.start();
+      const g = ctx.createGain(); g.gain.value = 0.2 / (i + 1);
+      o.connect(g); g.connect(humOut);
+      lfo(rnd(0.02, 0.2), 0.1 / Math.pow(i + 1, 0.8), g.gain);
+      humO.push(o); humG.push(g);
+    }
+
+    // ---------- слой: «дыхание» (цветной шум через резонансы на обертонах) ----------
+    const brOut = ctx.createGain(); brOut.connect(B.breath);
+    const brSrc = colorSrc(0.8);
+    const brF = [];
+    for (let i = 0; i < 6; i++) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 60; bp.frequency.value = 200 * (i + 1);
+      const g = ctx.createGain(); g.gain.value = 0.5;
+      brSrc.out.connect(bp); bp.connect(g); g.connect(brOut);
+      lfo(rnd(0.03, 0.25), 0.25, g.gain);
+      brF.push({ bp, g });
+    }
+
+    // ---------- слой: вода ----------
+    const wOut = ctx.createGain(); wOut.connect(B.water);
+    const wBP1 = ctx.createBiquadFilter(); wBP1.type = 'bandpass';
+    const wBP2 = ctx.createBiquadFilter(); wBP2.type = 'bandpass';
+    const wA1 = ctx.createGain(); wA1.gain.value = 0.55;
+    const wA2 = ctx.createGain(); wA2.gain.value = 0.55;
+    const wSrc1 = colorSrc(1), wSrc2 = colorSrc(0.8);
+    wSrc1.out.connect(wBP1); wBP1.connect(wA1); wA1.connect(wOut);
+    wSrc2.out.connect(wBP2); wBP2.connect(wA2); wA2.connect(wOut);
+    const wLfo1 = lfo(4, 0.4, wA1.gain);
+    const wLfo2 = lfo(5.5, 0.35, wA2.gain);
+    lfo(0.31, 350, wBP1.frequency);
+    lfo(0.23, 500, wBP2.frequency);
+
+    // ---------- слой: ветер ----------
+    const wnOut = ctx.createGain(); wnOut.connect(B.wind);
+    const wnSrc = colorSrc(0.6);
+    const wnBP = ctx.createBiquadFilter(); wnBP.type = 'bandpass'; wnBP.Q.value = 1;
+    const wnLP = ctx.createBiquadFilter(); wnLP.type = 'lowpass'; wnLP.frequency.value = 140;
+    const wnA = ctx.createGain(); wnA.gain.value = 0.7;
+    wnSrc.out.connect(wnBP); wnBP.connect(wnA); wnA.connect(wnOut);
+    wnSrc.out.connect(wnLP); wnLP.connect(wnOut);
+    lfo(0.09, 0.4, wnA.gain);
+    lfo(0.05, 250, wnBP.frequency);
+
+    // ---------- слой: металл (резонаторы на обертонах тональности) ----------
+    const ratios = [1, 2.756, 5.404, 8.933, 13.34, 18.64];
+    const mOut = ctx.createGain(); mOut.connect(B.metal);
+    const mExc = ctx.createGain(); mExc.gain.value = 0.5;
+    const mSrc = colorSrc(0.7);
+    mSrc.out.connect(mExc);
+    lfo(0.11, 0.3, mExc.gain);
+    const mF = ratios.map(() => {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 100;
+      const g = ctx.createGain(); g.gain.value = 1;
+      mExc.connect(bp); bp.connect(g); g.connect(mOut);
+      return { bp, g };
+    });
+
+    // ---------- слой: гранулятор (три разных источника) ----------
+    const mkGrainBuf = kind => {
+      const b = ctx.createBuffer(1, sr * 3, sr), d = b.getChannelData(0);
+      let lp = 0, br = 0, mx = 0;
+      if (kind === 0) {
+        const parts = Array.from({ length: 7 }, () => ({
+          f: expMap(Math.random(), 90, 2200), a: rnd(0.2, 1), m: rnd(0.2, 3), ph: rnd(0, 6.28)
+        }));
+        for (let i = 0; i < d.length; i++) {
+          const t = i / sr;
+          let s = 0;
+          for (const p of parts) s += Math.sin(2 * Math.PI * p.f * t + p.ph) * p.a * (0.5 + 0.5 * Math.sin(2 * Math.PI * p.m * t));
+          lp += ((Math.random() * 2 - 1) - lp) * 0.15;
+          d[i] = s + lp * 3; mx = Math.max(mx, Math.abs(d[i]));
+        }
+      } else if (kind === 1) {
+        for (let i = 0; i < d.length; i++) {
+          br = (br + 0.03 * (Math.random() * 2 - 1)) / 1.03;
+          lp += (br - lp) * 0.2;
+          d[i] = lp * (0.6 + 0.4 * Math.sin(2 * Math.PI * 0.7 * i / sr)); mx = Math.max(mx, Math.abs(d[i]));
+        }
+      } else {
+        const fs = Array.from({ length: 9 }, () => ({ f: expMap(Math.random(), 800, 7000), m: rnd(0.3, 5), ph: rnd(0, 6.28) }));
+        for (let i = 0; i < d.length; i++) {
+          const t = i / sr;
+          let s = 0;
+          for (const p of fs) s += Math.sin(2 * Math.PI * p.f * t) * Math.pow(Math.max(0, Math.sin(2 * Math.PI * p.m * t + p.ph)), 3);
+          d[i] = s; mx = Math.max(mx, Math.abs(s));
+        }
+      }
+      for (let i = 0; i < d.length; i++) d[i] /= (mx || 1);
+      return b;
+    };
+    const gBufs = [mkGrainBuf(0), mkGrainBuf(1), mkGrainBuf(2)];
+    const hann = new Float32Array(256);
+    for (let i = 0; i < 256; i++) hann[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / 255);
+    const gOut = ctx.createGain(); gOut.connect(B.grain);
+    let nextG = 0;
+    function grains() {
+      const now = ctx.currentTime;
+      if (nextG < now) nextG = now;
+      if (W.grain < 0.03) { nextG = now + 0.2; return; }
+      const dens = expMap(P.gDens.v, 4, 60);
+      const size = expMap(P.gSize.v, 0.03, 0.3);
+      const center = (now * 0.03) % 1;
+      const buf = gBufs[clamp(Math.floor(clamp(P.gSrc.v + gauss() * 0.08) * 3), 0, 2)];
+      while (nextG < now + 0.5) {
+        const rate = expMap(P.gPitch.v, 0.2, 2.5) * Math.pow(2, gauss() * 0.05);
+        const span = Math.max(0.01, buf.duration - size * rate - 0.02);
+        const pos = clamp(center + gauss() * 0.25 * P.gPos.v, 0, 1) * span;
+        const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
+        const env = ctx.createGain(); env.gain.value = 0;
+        env.gain.setValueCurveAtTime(hann, nextG, size);
+        const pan = ctx.createStereoPanner(); pan.pan.value = rnd(-0.8, 0.8);
+        src.connect(env); env.connect(pan); pan.connect(gOut);
+        src.start(nextG, pos); src.stop(nextG + size + 0.05);
+        nextG += (1 / dens) * rnd(0.5, 1.5);
+      }
+    }
+
+    // =====================================================
+    //          ПРОСТРАНСТВО: от глухой студии до кафедрала
+    // =====================================================
+    const sendD = ctx.createGain(), sendR = ctx.createGain();
+    dry.connect(sendD); dry.connect(sendR);
+
+    const dRatios = [1, 1.618, 2.414];
+    const dels = dRatios.map((r, i) => {
+      const dl = ctx.createDelay(4); dl.delayTime.value = 0.4 * r;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2200;
+      const fb = ctx.createGain(); fb.gain.value = 0.6;
+      const wet = ctx.createGain(); wet.gain.value = 0.3;
+      sendD.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl);
+      lp.connect(wet); wet.connect(mix);
+      lfo(0.05 + 0.03 * i, 0.004, dl.delayTime);
+      return { dl, fb, wet, r };
+    });
+
+    function makeIR(sec, k0, k1, decay, pre) {
+      const len = Math.floor(sr * sec), p = Math.floor(sr * (pre || 0));
+      const b = ctx.createBuffer(2, len, sr);
+      for (let c = 0; c < 2; c++) {
+        const d = b.getChannelData(c);
+        let lp = 0;
+        for (let i = 0; i < len; i++) {
+          const t = i / len;
+          lp += ((Math.random() * 2 - 1) - lp) * lerp(k0, k1, t);
+          const fade = i < sr * 0.01 ? i / (sr * 0.01) : 1;
+          d[i] = i < p ? 0 : lp * Math.exp(-decay * t) * fade;
+        }
+      }
+      return b;
+    }
+    // 0 глухая студия, 1 комната, 2 зал, 3 кафедрал
+    const IRS = [
+      makeIR(0.25, 0.35, 0.08, 9, 0),
+      makeIR(1.1, 0.6, 0.1, 7, 0.004),
+      makeIR(4, 0.9, 0.05, 6.5, 0.012),
+      makeIR(12, 0.8, 0.03, 6, 0.04),
+    ];
+    const WET_SCALE = [0.35, 0.7, 1, 1.15];
+    const convs = IRS.map(b => { const c = ctx.createConvolver(); c.buffer = b; sendR.connect(c); return c; });
+    const rG = convs.map(c => { const g = ctx.createGain(); g.gain.value = 0; c.connect(g); g.connect(mix); return g; });
+
+    const shimIn = ctx.createGain(); shimIn.gain.value = 0;
+    const shimOutG = ctx.createGain(); shimOutG.gain.value = 0.9;
+    if (shimNode) {
+      convs[2].connect(shimIn); convs[3].connect(shimIn);
+      const sHP = ctx.createBiquadFilter(); sHP.type = 'highpass'; sHP.frequency.value = 250;
+      const sLP = ctx.createBiquadFilter(); sLP.type = 'lowpass'; sLP.frequency.value = 6500;
+      const sFb = ctx.createGain(); sFb.gain.value = 0.5;
+      const sDel = ctx.createDelay(1); sDel.delayTime.value = 0.07;
+      shimIn.connect(shimNode); shimNode.connect(sHP); sHP.connect(sLP);
+      sLP.connect(shimOutG); shimOutG.connect(mix);
+      sLP.connect(sFb); sFb.connect(sDel); sDel.connect(convs[2]);
+    }
+
+    // =====================================================
+    //     СОСТОЯНИЕ: слои, тональность, лад, пространство
+    // =====================================================
+    const W = {}, WT = {}, WTc = {};
+    LAYERS.forEach(n => { W[n] = 0; WT[n] = 0; WTc[n] = 10; });
+    let C = 0.35, trend = 0.05;                 // «плотность»: максимализм (1) ⇄ минимализм (0)
+    let root = randInt(12), droneOff = 0;
+    let moodIdx = randInt(MOODS.length);
+    const cur = Array(12).fill(false);          // текущий набор ступеней (морфится по одной)
+    const tgt = Array(12).fill(false);
+    const loadMood = (arr, i) => { arr.fill(false); MOODS[i].pcs.forEach(p => arr[p] = true); };
+    loadMood(cur, moodIdx); loadMood(tgt, moodIdx);
+    const scL = () => { const a = []; for (let i = 0; i < 12; i++) if (cur[i]) a.push(i); return a; };
+    let spaceV = 0.5, spaceTarget = 0.5, spaceTc = 8, shimV = 0, shimTarget = 0;
+    let morphK = 1, fastUntil = 0, scaleNext = 0, rootPending = false;
+    let nextRetarget = 0, lockUntil = 0, nextJitter = 0, infoT = 0, nextWave = 0, mainHold = 2, lockTotal = 100;
+    const liked = [], avoid = {};
+
+    // ----- тембры -----
+    function padNote(freq, t0, atk, hold, rel, vel, bus, wv) {
+      const w = wv || [WV.a, WV.b];
+      const wA = WAVES[w[0]], wB = WAVES[w[1]], mx = WV.mix;
+      const env = ctx.createGain(); env.gain.value = 0;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.7;
+      const cut = clamp(expMap(P.padCut.v, 500, 7000) + freq * 1.5, 200, 12000);
+      lp.frequency.setValueAtTime(cut * 0.4, t0);
+      lp.frequency.setTargetAtTime(cut, t0, atk / 2);
+      lp.connect(env); env.connect(bus);
+      const d = rnd(3, 9);
+      const defs = [[wA, -d, 0.25 + 0.5 * (1 - mx)], [wB, d, 0.25 + 0.5 * mx], [wA, 0, 0.25 * (1 - mx)]];
+      const end = t0 + atk + hold + rel * 1.3;
+      defs.forEach(([wf, det, g]) => {
+        const o = ctx.createOscillator(); o.setPeriodicWave(wf); o.frequency.value = freq; o.detune.value = det;
+        const og = ctx.createGain(); og.gain.value = g;
+        o.connect(og); og.connect(lp);
+        o.start(t0); o.stop(end);
+      });
+      env.gain.setValueAtTime(0, t0);
+      env.gain.setTargetAtTime(vel, t0, atk / 3);
+      env.gain.setTargetAtTime(0, t0 + atk + hold, rel / 3);
+    }
+    function softNote(type, f, t0, dur, vel, bus) {
+      const o = ctx.createOscillator(); o.type = type; o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(vel, t0 + 0.05);
+      g.gain.setTargetAtTime(0, t0 + dur, 0.15);
+      o.connect(g); g.connect(bus); o.start(t0); o.stop(t0 + dur + 1.2);
+    }
+    function bellNote(f, t0, vel, bus, dec) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.5;
+      lp.frequency.value = clamp(expMap(P.padCut.v, 900, 7000), 300, 12000);
+      lp.connect(bus);
+      [[1, 1, 1], [2, 0.3, 0.6], [3.01, 0.12, 0.35], [5.4, 0.04, 0.2]].forEach(([r, a, dk], i) => {
+        const o = ctx.createOscillator();
+        if (i === 0) o.setPeriodicWave(WAVES[WV.a]); else o.type = 'sine';
+        o.frequency.value = f * r;
+        const g = ctx.createGain(); g.gain.value = 0;
+        g.gain.setValueAtTime(0, t0);
+        g.gain.linearRampToValueAtTime(vel * a, t0 + 0.06);
+        g.gain.setTargetAtTime(0, t0 + 0.07, dec * dk / 3);
+        o.connect(g); g.connect(lp);
+        o.start(t0); o.stop(t0 + dec * dk * 1.4 + 0.5);
+      });
+    }
+    function mallet(f, t0, vel, bus, dec, pan) {
+      const pn = ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(bus);
+      [[1, 1, 'sine', 1], [3.9, 0.22, 'sine', 0.25], [2, 0.12, 'triangle', 0.5]].forEach(([r, a, ty, dk]) => {
+        const o = ctx.createOscillator(); o.type = ty; o.frequency.value = f * r;
+        const g = ctx.createGain(); g.gain.value = 0;
+        g.gain.setValueAtTime(0, t0);
+        g.gain.linearRampToValueAtTime(vel * a, t0 + 0.004);
+        g.gain.setTargetAtTime(0, t0 + 0.006, dec * dk / 3);
+        o.connect(g); g.connect(pn);
+        o.start(t0); o.stop(t0 + dec * dk * 1.4 + 0.3);
+      });
+    }
+    function vibes(f, t0, vel, bus, dec) {
+      [[1, 1, 1], [1.003, 0.6, 1], [4, 0.14, 0.3]].forEach(([r, a, dk]) => {
+        const o = ctx.createOscillator(); o.frequency.value = f * r;
+        const g = ctx.createGain(); g.gain.value = 0;
+        g.gain.setValueAtTime(0, t0);
+        g.gain.linearRampToValueAtTime(vel * a, t0 + 0.008);
+        g.gain.setTargetAtTime(0, t0 + 0.01, dec * dk / 3);
+        o.connect(g); g.connect(bus);
+        o.start(t0); o.stop(t0 + dec * dk * 1.4 + 0.3);
+      });
+    }
+    function rhodes(f, t0, vel, bus, dec) {
+      const car = ctx.createOscillator(); car.frequency.value = f;
+      const mod = ctx.createOscillator(); mod.frequency.value = f;
+      const mg = ctx.createGain();
+      mg.gain.setValueAtTime(f * 1.4, t0);
+      mg.gain.setTargetAtTime(f * 0.06, t0, 0.5);
+      mod.connect(mg); mg.connect(car.frequency);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(vel, t0 + 0.006);
+      g.gain.setTargetAtTime(0, t0 + 0.01, dec / 3);
+      car.connect(g); g.connect(bus);
+      car.start(t0); mod.start(t0);
+      car.stop(t0 + dec * 1.4 + 0.3); mod.stop(t0 + dec * 1.4 + 0.3);
+    }
+    function glassNote() {
+      const sc = scL();
+      let midi = 72 + root + scaleNote(sc, randInt(sc.length)) + 12 * randInt(2);
+      while (midi > 96) midi -= 12;
+      const f = mtof(midi), t0 = ctx.currentTime + 0.05;
+      const car = ctx.createOscillator(); car.frequency.value = f;
+      const mod = ctx.createOscillator(); mod.frequency.value = f * pick([1.5, 2.01, 3.5, 1.41]);
+      const mg = ctx.createGain();
+      mg.gain.setValueAtTime(f * rnd(1.5, 4), t0);
+      mg.gain.setTargetAtTime(f * 0.01, t0, rnd(0.8, 1.6));
+      mod.connect(mg); mg.connect(car.frequency);
+      const env = ctx.createGain(); env.gain.value = 0;
+      const tau = rnd(1.2, 2.6), vel = rnd(0.05, 0.1);
+      env.gain.setValueAtTime(0, t0);
+      env.gain.linearRampToValueAtTime(vel, t0 + 0.03);
+      env.gain.setTargetAtTime(0, t0 + 0.04, tau);
+      car.connect(env); env.connect(B.glass);
+      car.start(t0); mod.start(t0);
+      car.stop(t0 + tau * 7); mod.stop(t0 + tau * 7);
+    }
+
+    // ----- глитч: шесть разных типов событий -----
+    const crushCurve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) crushCurve[i] = Math.round(((i / 1023) * 2 - 1) * 3) / 3;
+    function glitchEvent() {
+      const t0 = ctx.currentTime + 0.02;
+      const pan = ctx.createStereoPanner(); pan.pan.value = rnd(-0.9, 0.9); pan.connect(B.glitch);
+      const env = (dur, vel) => {
+        const g = ctx.createGain(); g.gain.value = 0;
+        g.gain.setValueAtTime(0, t0);
+        g.gain.linearRampToValueAtTime(vel, t0 + Math.min(0.003, dur / 3));
+        g.gain.setTargetAtTime(0, t0 + dur * 0.5, dur / 6);
+        g.connect(pan); return g;
+      };
+      const kind = randInt(6);
+      if (kind === 0) {                                   // щелчок
+        const s = ctx.createBufferSource(); s.buffer = NB[2];
+        const h = ctx.createBiquadFilter(); h.type = 'highpass'; h.frequency.value = rnd(1000, 9000);
+        const d = rnd(0.002, 0.008);
+        s.connect(h); h.connect(env(d, rnd(0.5, 1)));
+        s.start(t0, rnd(0, 3)); s.stop(t0 + d + 0.02);
+      } else if (kind === 1) {                            // писк с падением/подъёмом
+        const o = ctx.createOscillator(); o.type = pick(['sine', 'square', 'triangle']);
+        const f0 = expMap(Math.random(), 200, 6000), d = rnd(0.02, 0.14);
+        o.frequency.setValueAtTime(f0, t0);
+        o.frequency.exponentialRampToValueAtTime(clamp(f0 * pick([0.25, 0.5, 2, 4]), 40, 12000), t0 + d);
+        o.connect(env(d, rnd(0.08, 0.2))); o.start(t0); o.stop(t0 + d + 0.05);
+      } else if (kind === 2) {                            // заикание буфера
+        const buf = pick(gBufs), len = rnd(0.015, 0.09), n = 3 + randInt(10), per = len * rnd(1.1, 2);
+        const pos = rnd(0, buf.duration - 0.3), rate = pick([0.5, 1, 1, 2, 1.5]);
+        for (let i = 0; i < n; i++) {
+          const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
+          const g = ctx.createGain(), ts = t0 + i * per;
+          g.gain.setValueAtTime(0, ts);
+          g.gain.linearRampToValueAtTime(0.5 * Math.pow(0.9, i), ts + 0.002);
+          g.gain.setValueAtTime(0.5 * Math.pow(0.9, i), ts + len - 0.003);
+          g.gain.linearRampToValueAtTime(0, ts + len);
+          s.connect(g); g.connect(pan);
+          s.start(ts, pos); s.stop(ts + len + 0.01);
+        }
+      } else if (kind === 3) {                            // шумовая вспышка с фильтром
+        const s = ctx.createBufferSource(); s.buffer = pick(NB);
+        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = rnd(1, 8);
+        const d = rnd(0.05, 0.4), fa = expMap(Math.random(), 150, 6000);
+        bp.frequency.setValueAtTime(fa, t0);
+        bp.frequency.exponentialRampToValueAtTime(clamp(fa * pick([0.2, 0.5, 2, 5]), 60, 14000), t0 + d);
+        s.connect(bp); bp.connect(env(d, rnd(0.6, 1.4)));
+        s.start(t0, rnd(0, 3)); s.stop(t0 + d + 0.05);
+      } else if (kind === 4) {                            // «битовая» пила
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = expMap(Math.random(), 60, 1800);
+        const ws = ctx.createWaveShaper(); ws.curve = crushCurve;
+        const d = rnd(0.05, 0.3);
+        o.connect(ws); ws.connect(env(d, 0.12)); o.start(t0); o.stop(t0 + d + 0.05);
+      } else {                                            // модемные ступеньки
+        const n = 5 + randInt(8), step = rnd(0.025, 0.06);
+        const o = ctx.createOscillator(); o.type = 'sine';
+        for (let i = 0; i < n; i++) o.frequency.setValueAtTime(expMap(Math.random(), 400, 5000), t0 + i * step);
+        o.connect(env(n * step, 0.1)); o.start(t0); o.stop(t0 + n * step + 0.05);
+      }
+    }
+    let nextGl = 0;
+    function glitchTick(now) {
+      if (nextGl < now) nextGl = now + 0.05;
+      const la = now + 0.3;
+      while (nextGl < la) {
+        if (Math.random() < 0.12) {                       // кластер
+          const n = 4 + randInt(10); let t = nextGl;
+          for (let i = 0; i < n; i++) { setTimeout(glitchEvent, Math.max(0, (t - now) * 1000)); t += rnd(0.03, 0.15); }
+          nextGl = t + rnd(0.5, 2);
+        } else {
+          setTimeout(glitchEvent, Math.max(0, (nextGl - now) * 1000));
+          nextGl += -Math.log(1 - Math.random()) / expMap(P.glDens.v, 0.4, 9);
+        }
+      }
+    }
+
+    // ----- гармония -----
+    const barSemis = (st, sc) => {
+      const d = st.prog[st.bar % st.prog.length]; st.bar++;
+      st.semis = [0, 1, 2, 3].map(k => scaleNote(sc, d + 2 * k));
+    };
+    const melNote = (st, sc) => {
+      st.mel = clamp(st.mel + pick([-2, -1, -1, 0, 1, 1, 2]), -2, 9);
+      let md = 60 + root + scaleNote(sc, st.mel);
+      while (md > 86) md -= 12;
+      while (md < 57) md += 12;
+      return md;
+    };
+
+    // ----- состояния голосов -----
+    const ST = {
+      pad: { next: 0, deg: -1 },
+      bells: { loops: [13.1, 17.3, 19.7, 23.9, 29.3, 31.7, 37.1].map(p => ({ p, idx: randInt(14) - 4, next: 0 })) },
+      glass: { next: 0 },
+      muzak: { t: 0, step: 0, bar: 0, prog: PROGS[0], semis: [0, 2, 4, 6], mel: 2 },
+      elevator: { t: 0, step: 0, bar: 0, prog: PROGS[1], semis: [0, 2, 4, 6], mel: 2 },
+      micro: { cell: [], mv: [] },
+      arp: { t: 0, step: 0, bar: 0, deg: 0, prog: PROGS[0], pat: 'up' },
+      bseq: { t: 0, step: 0, bar: 0, deg: 0, prog: PROGS[3], pat: [] },
+      ind: { t: 0, step: 0, nextClang: 0, nextHiss: 0, nextRumble: 0, nextMotor: 0 },
+      dungeon: { t: 0, bar: 0, deg: 0, mel: 2, prog: [0, 5, 6, 4], nextChord: 0, nextBell: 0 },
+      berlin: { t: 0, step: 0, bar: 0, deg: 0, prog: PROGS[2], pat: [], nextLead: 0 },
+      lofi: { t: 0, step: 0, bar: 0, deg: 0, mel: 2, prog: PROGS[1], semis: [0, 2, 4, 6, 8] },
+      krell: { v: [{ next: 0, center: 62, mod: 1 }, { next: 0, center: 74, mod: 1.2 }] },
+    };
+
+    function playChord(now) {
+      const st = ST.pad, sc = scL();
+      st.deg = (st.deg + 1 + randInt(3)) % 7;
+      const size = 2 + Math.round(C * 3);
+      const reg = Math.round(linMap(P.padOct.v, -1, 1)) * 12;
+      const base = 48 + root + reg;
+      const dur = expMap(1 - P.padDens.v, 14, 40);
+      const semis = []; for (let k = 0; k < size; k++) semis.push(scaleNote(sc, st.deg + k * 2));
+      semis.forEach(s => {
+        let midi = base + s; while (midi > 88) midi -= 12;
+        padNote(mtof(midi), now + rnd(0, 2), rnd(5, 9), dur * 0.6, rnd(8, 13), 0.18, B.pad);
+      });
+      if (C > 0.6) {
+        let top = base + semis[semis.length - 1] + 12; while (top > 92) top -= 12;
+        padNote(mtof(top), now + rnd(1, 3), rnd(6, 10), dur * 0.6, rnd(8, 13), 0.09, B.pad);
+      }
+      if (C > 0.2) padNote(mtof(base - 12 + semis[0]), now, rnd(6, 10), dur * 0.7, rnd(10, 14), 0.16, B.pad);
+      st.next = now + dur;
+    }
+    function seqMuzak(now, la) {
+      const st = ST.muzak, sc = scL(), base = 48 + root;
+      if (st.t < now) st.t = now + 0.05;
+      const beat = 60 / expMap(P.padDens.v, 52, 78);
+      while (st.t < la) {
+        const b = st.step % 4;
+        if (b === 0) {
+          if (st.step % 16 === 0 && Math.random() < 0.5) st.prog = pick(PROGS);
+          barSemis(st, sc);
+          if (C >= 0.45 || Math.random() < 0.4) st.semis.forEach(s => {
+            let md = base + s; while (md > 78) md -= 12;
+            padNote(mtof(md), st.t, 0.8, beat * 3, 1.8, 0.12, B.muzak, [1, 3]);
+          });
+        }
+        if (C >= 0.25 && (b === 0 || b === 2)) softNote('triangle', mtof(base - 12 + st.semis[b === 0 ? 0 : 2]), st.t, beat * 1.8, 0.2, B.muzak);
+        if (Math.random() < 0.4 + 0.35 * C) vibes(mtof(melNote(st, sc)), st.t, 0.16, B.muzak, rnd(1.6, 2.8));
+        if (C >= 0.75 && b % 2 === 1 && Math.random() < 0.5) vibes(mtof(base + 12 + st.semis[randInt(4)]), st.t, 0.09, B.muzak, 2);
+        st.t += beat; st.step++;
+      }
+    }
+    function seqElev(now, la) {
+      const st = ST.elevator, sc = scL(), base = 48 + root;
+      if (st.t < now) st.t = now + 0.05;
+      const e = 60 / expMap(P.padDens.v, 70, 100) / 2;
+      while (st.t < la) {
+        const s = st.step % 8;
+        if (s === 0) {
+          if (st.step % 32 === 0 && Math.random() < 0.5) st.prog = pick(PROGS);
+          barSemis(st, sc);
+          if (C >= 0.7) st.semis.forEach(x => {
+            let md = base + x; while (md > 78) md -= 12;
+            padNote(mtof(md), st.t, 0.9, e * 6, 1.8, 0.07, B.elevator, [1, 3]);
+          });
+        }
+        if (s === 0 || s === 3 || s === 6) {
+          [st.semis[1], st.semis[2], st.semis[3]].forEach(x => {
+            let md = base + 12 + x; while (md > 82) md -= 12;
+            rhodes(mtof(md), st.t + rnd(0, 0.015), 0.07, B.elevator, 1.4);
+          });
+        }
+        if (C >= 0.3 && (s === 0 || s === 4)) softNote('triangle', mtof(base - 12 + st.semis[s === 0 ? 0 : 2]), st.t, e * 3.2, 0.2, B.elevator);
+        if (C >= 0.5 && Math.random() < 0.3) rhodes(mtof(melNote(st, sc)), st.t, 0.1, B.elevator, 2.2);
+        st.t += e; st.step++;
+      }
+    }
+    function seqMicro(now, la) {
+      const st = ST.micro, sc = scL();
+      if (!st.cell.length) st.cell = Array.from({ length: 3 + randInt(3) }, () => randInt(6));
+      const e = 60 / expMap(P.padDens.v, 80, 150) / 2, nv = 1 + Math.round(C * 2);
+      if (!st.mv.length) st.mv = [
+        { t: now, i: 0, mult: 1, oct: 0, pan: -0.4 },
+        { t: now, i: 0, mult: 1.011, oct: 0, pan: 0.4 },
+        { t: now, i: 0, mult: 2, oct: -12, pan: 0 }];
+      for (let k = 0; k < nv; k++) {
+        const v = st.mv[k];
+        if (v.t < now) v.t = now + 0.1;
+        while (v.t < la) {
+          const idx = st.cell[v.i % st.cell.length];
+          let md = 60 + root + scaleNote(sc, idx) + v.oct;
+          while (md > 88) md -= 12;
+          mallet(mtof(md), v.t, 0.16, B.micro, 0.9, v.pan);
+          v.t += e * v.mult; v.i++;
+          if (k === 0 && v.i % (st.cell.length * 6) === 0) {
+            const r = Math.random();
+            if (r < 0.55) { const j = randInt(st.cell.length); st.cell[j] = clamp(st.cell[j] + pick([-1, 1]), -2, 8); }
+            else if (r < 0.75 && st.cell.length < 6) st.cell.push(randInt(6));
+            else if (r < 0.9 && st.cell.length > 2) st.cell.pop();
+          }
+        }
+      }
+    }
+
+    // ----- космические арпеджио и вибрирующий бас-секвенсор (общая сетка и темп) -----
+    const ambBpm = () => expMap(P.padDens.v, 68, 108);
+    const gridO = ctx.currentTime;
+    const alignGrid = (now, e) => gridO + Math.ceil((now + 0.05 - gridO) / e) * e;
+    const ARP_DEG = [0, 2, 4, 6, 7, 9, 11, 13];
+    function pluck(f, t0, dur, vel, bus, bright) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 3;
+      const base = expMap(P.padCut.v, 700, 5500);
+      lp.frequency.setValueAtTime(clamp(base * (1.5 + 2 * bright), 200, 14000), t0);
+      lp.frequency.setTargetAtTime(base * 0.5, t0 + 0.005, 0.09);
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0);
+      env.gain.linearRampToValueAtTime(vel, t0 + 0.004);
+      env.gain.setTargetAtTime(0, t0 + dur * 0.5, dur * 0.3);
+      lp.connect(env); env.connect(bus);
+      [[WAVES[WV.a], -6], [WAVES[WV.b], 7]].forEach(([w, det]) => {
+        const o = ctx.createOscillator(); o.setPeriodicWave(w); o.frequency.value = f; o.detune.value = det;
+        const g = ctx.createGain(); g.gain.value = 0.5;
+        o.connect(g); g.connect(lp); o.start(t0); o.stop(t0 + dur * 2 + 0.4);
+      });
+    }
+    function seqArp(now, la) {
+      const st = ST.arp, sc = scL(), e = 60 / ambBpm() / 4;
+      if (st.t < now) st.t = alignGrid(now, e);
+      while (st.t < la) {
+        if (st.step % 16 === 0) {
+          if (st.bar % 2 === 0) {
+            st.deg = st.prog[(st.bar >> 1) % st.prog.length];
+            if (Math.random() < 0.4) st.pat = pick(['up', 'down', 'updown', 'skip', 'rand']);
+            if (Math.random() < 0.25) st.prog = pick(PROGS);
+          }
+          st.bar++;
+        }
+        const L = 5 + Math.round(C * 3);
+        let k;
+        switch (st.pat) {
+          case 'up': k = st.step % L; break;
+          case 'down': k = L - 1 - (st.step % L); break;
+          case 'updown': { const m = st.step % (2 * L - 2); k = m < L ? m : 2 * L - 2 - m; break; }
+          case 'skip': k = [0, 2, 1, 3, 2, 4, 3, 5][st.step % 8] % L; break;
+          default: k = randInt(L);
+        }
+        const rest = (C < 0.4 && st.step % 2 === 1) || Math.random() < 0.08;
+        if (!rest) {
+          let md = 60 + root + scaleNote(sc, st.deg + ARP_DEG[k]);
+          while (md > 93) md -= 12;
+          while (md < 57) md += 12;
+          const acc = st.step % 4 === 0;
+          pluck(mtof(md), st.t, e * (acc ? 1.6 : 1.1), acc ? 0.11 : 0.07, B.arp, acc ? 1 : 0.4);
+        }
+        st.t += e; st.step++;
+      }
+    }
+    // ----- бас-секвенсор в стиле транс: вдвое быстрее общей сетки, ячейки из 4 шагов, шаг целый или половина,
+    //       форма волны от пилы до узкого пульса -----
+    const BASSW = [0, 0.2, 0.4, 0.6, 0.8, 1].map(b => {
+      const n = 48, re = new Float32Array(n + 1), im = new Float32Array(n + 1), d = lerp(0.5, 0.16, b);
+      for (let k = 1; k <= n; k++) {
+        im[k] = (1 - b) * (2 / Math.PI) / k * (k % 2 ? 1 : -1);                 // пила
+        re[k] = b * (2 / (k * Math.PI)) * Math.sin(k * Math.PI * d);            // пульс со скважностью d
+      }
+      return ctx.createPeriodicWave(re, im);
+    });
+    const BASS_CELLS = { '12-4': [1, 1, 0, 1], '1-34': [1, 0, 1, 1], '1--4': [1, 0, 0, 1], '1234': [1, 1, 1, 1], '-2-4': [0, 1, 0, 1],
+                         '1-3-': [1, 0, 1, 0], '123-': [1, 1, 1, 0], '-234': [0, 1, 1, 1], '12--': [1, 1, 0, 0], '--34': [0, 0, 1, 1] };
+    const BASS_SPARSE = ['1--4', '1-3-', '12--', '--34', '-2-4'];
+    const BASS_DENSE = ['1234', '12-4', '1-34', '123-', '-234'];
+    function bassPulse(f, t0, dur, vel, acc, wi, fx) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass';
+      let vv = vel;
+      if (fx.mode === 'sweep') {                       // слышный «трансовый» фильтр: срез и резонанс ходят по кругу
+        const ph = ((t0 - fx.t0) / fx.period) % 1;
+        const pos = fx.shape === 'ramp' ? ph : 0.5 - 0.5 * Math.cos(2 * Math.PI * ph);
+        const cut = expMap(pos, 140, 3400);
+        lp.Q.value = 3 + 8 * pos;
+        vv = vel * lerp(1.6, 0.5, pos);                  // закрытый срез тише — подтягиваем, резонансный пик громче — прижимаем
+        lp.frequency.setValueAtTime(cut * (acc ? 1.5 : 1.2), t0);
+        lp.frequency.setTargetAtTime(cut * 0.85, t0 + 0.003, clamp(dur * 0.45, 0.02, 0.09));
+      } else if (fx.mode === 'static') {               // фильтра не слышно: открыт, без резонанса и огибающей
+        lp.Q.value = 0.7;
+        lp.frequency.value = 4200;
+        vv = vel * 1.1;
+      } else {                                         // мягкий щипок, как было раньше
+        const cut = expMap(P.bassCut.v, 180, 900) * (0.7 + 0.3 * Math.sin(t0 * 0.17));
+        lp.Q.value = 6;
+        lp.frequency.setValueAtTime(cut * (acc ? 2.4 : 1.6), t0);
+        lp.frequency.setTargetAtTime(cut * 0.55, t0 + 0.003, clamp(dur * 0.45, 0.02, 0.09));
+      }
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0);
+      env.gain.linearRampToValueAtTime(vv, t0 + 0.003);
+      env.gain.setTargetAtTime(0, t0 + dur * 0.75, clamp(dur * 0.3, 0.012, 0.05));
+      lp.connect(env); env.connect(B.bseq);
+      const end = t0 + dur + 0.25;
+      [-8, 8].forEach(det => {
+        const o = ctx.createOscillator(); o.setPeriodicWave(BASSW[wi]); o.frequency.value = f; o.detune.value = det;
+        const g = ctx.createGain(); g.gain.value = 0.5;
+        o.connect(g); g.connect(lp); o.start(t0); o.stop(end);
+      });
+      const sb = ctx.createOscillator(); sb.type = 'sine'; sb.frequency.value = f;
+      const sg = ctx.createGain(); sg.gain.value = 0.7;
+      sb.connect(sg); sg.connect(lp); sb.start(t0); sb.stop(end);
+    }
+    function seqBass(now, la) {
+      const st = ST.bseq, sc = scL();
+      if (!st.seen || now - st.seen > 1.5) {          // стиль только что выпал: темп и характер фильтра выбираем на этот раз
+        st.mul = pick([1, 2]);                         // как общий темп или вдвое быстрее
+        const r = Math.random();
+        st.fx = { mode: r < 0.45 ? 'sweep' : r < 0.8 ? 'static' : 'subtle', t0: now, period: rnd(6, 20), shape: pick(['sine', 'ramp']) };
+        st.t = 0; st.step = 0; st.hold = 0;
+      }
+      st.seen = now;
+      const e = 60 / (ambBpm() * st.mul) / 4;
+      if (st.t < now) st.t = alignGrid(now, e);
+      while (st.t < la) {
+        const s = st.step % 4;
+        if (s === 0) {                                                   // начало ячейки из 4 шагов
+          if (st.step % 16 === 0) {
+            if (st.bar % 4 === 0) st.deg = st.prog[(st.bar >> 2) % st.prog.length];
+            st.bar++;
+            st.wpos = clamp((st.wpos === undefined ? Math.random() : st.wpos) + gauss() * 0.2);
+          }
+          if (!st.hold || --st.hold <= 0) {                              // раз в 1–4 ячейки меняем рисунок
+            const set = C < 0.35 ? BASS_SPARSE : C > 0.7 ? BASS_DENSE : Object.keys(BASS_CELLS);
+            st.type = pick(set); st.cell = BASS_CELLS[st.type];
+            st.hold = 1 + randInt(4);
+            st.lenMode = pick(['full', 'half', 'mix']);                  // шаг целый / половина / вперемешку
+          }
+        }
+        if (st.cell && st.cell[s]) {
+          const r = Math.random();
+          const off = r < 0.7 ? [0, 0] : r < 0.82 ? [0, 12] : r < 0.92 ? [4, 0] : [2, 0];
+          let md = 36 + root + scaleNote(sc, st.deg + off[0]) + off[1];
+          while (md > 57) md -= 12;
+          while (md < 33) md += 12;
+          const full = st.lenMode === 'full' || (st.lenMode === 'mix' && Math.random() < 0.5);
+          const wi = clamp(Math.round(st.wpos * 5 + (Math.random() < 0.3 ? pick([-1, 1]) : 0)), 0, 5);
+          bassPulse(mtof(md), st.t, e * (full ? 0.95 : 0.45), s === 0 ? 0.19 : 0.13, s === 0, wi, st.fx);
+        }
+        st.t += e; st.step++;
+      }
+    }
+
+    // =====================================================
+    //   НОВЫЕ СТИЛИ: индастриал, dungeon synth, берлинская школа, lofi / vapour
+    // =====================================================
+    const noiseOne = (kind, t0, dur, loop) => {
+      const n = ctx.createBufferSource(); n.buffer = NB[kind]; n.loop = !!loop;
+      n.start(t0, rnd(0, 3)); n.stop(t0 + dur); return n;
+    };
+
+    // ----- индастриал: гул станков, лязг металла, пар, редкий механический пульс -----
+    function indThump(t0, vel) {
+      const o = ctx.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(120, t0); o.frequency.exponentialRampToValueAtTime(38, t0 + 0.14);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + 0.004); g.gain.setTargetAtTime(0, t0 + 0.02, 0.09);
+      o.connect(g); g.connect(B.ind); o.start(t0); o.stop(t0 + 0.7);
+    }
+    function indTick(t0, vel) {
+      const n = noiseOne(2, t0, 0.1), bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = rnd(900, 4200); bp.Q.value = rnd(1, 4);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + 0.002); g.gain.setTargetAtTime(0, t0 + 0.004, 0.012);
+      n.connect(bp); bp.connect(g); g.connect(B.ind);
+    }
+    function indClang(t0, vel) {
+      const f = expMap(Math.random(), 70, 380), dec = rnd(1.4, 4);
+      const pn = ctx.createStereoPanner(); pn.pan.value = rnd(-0.7, 0.7); pn.connect(B.ind);
+      const rs = [1, 2.756, 5.404, 8.933, 13.34], am = [1, 0.6, 0.4, 0.25, 0.14];
+      rs.forEach((r, i) => {
+        if (f * r > 12000) return;
+        const o = ctx.createOscillator(); o.frequency.value = f * r * (1 + rnd(-0.004, 0.004));
+        const g = ctx.createGain(); g.gain.value = 0;
+        const d = dec * (1 - i * 0.16);
+        g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel * am[i], t0 + 0.002); g.gain.setTargetAtTime(0, t0 + 0.004, d / 3);
+        o.connect(g); g.connect(pn); o.start(t0); o.stop(t0 + d * 1.5 + 0.3);
+      });
+      indTick(t0, vel * 0.9);
+    }
+    function indHiss(t0, dur, vel) {
+      const n = noiseOne(2, t0, dur + 0.6), hp = ctx.createBiquadFilter();
+      hp.type = 'highpass'; hp.frequency.value = rnd(2500, 6000);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + dur * 0.25); g.gain.setTargetAtTime(0, t0 + dur * 0.3, dur * 0.2);
+      n.connect(hp); hp.connect(g); g.connect(B.ind);
+    }
+    function indRumble(t0, dur, vel) {
+      const n = noiseOne(0, t0, dur + 1.5, true), lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = rnd(80, 240);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + dur * 0.4); g.gain.setTargetAtTime(0, t0 + dur * 0.5, dur * 0.18);
+      n.connect(lp); lp.connect(g); g.connect(B.ind);
+    }
+    function indMotor(t0, dur, vel) {
+      const f = rnd(46, 64), lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 360;
+      const am = ctx.createGain(); am.gain.value = 0.6;
+      const lf = ctx.createOscillator(); lf.frequency.value = rnd(5, 9);
+      const lg = ctx.createGain(); lg.gain.value = 0.4; lf.connect(lg); lg.connect(am.gain);
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(vel, t0 + 3); env.gain.setTargetAtTime(0, t0 + dur, 1.4);
+      lp.connect(am); am.connect(env); env.connect(B.ind);
+      const end = t0 + dur + 6;
+      [-1.5, 1.5].forEach(d => {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f + d;
+        o.connect(lp); o.start(t0); o.stop(end);
+      });
+      lf.start(t0); lf.stop(end);
+    }
+    function seqIndustrial(now, la) {
+      const st = ST.ind, e = 60 / expMap(P.padDens.v, 54, 96) / 2;
+      if (st.t < now) st.t = alignGrid(now, e);
+      while (st.t < la) {
+        const s = st.step % 16;
+        if (C > 0.25 || s === 0) {
+          if (s % 4 === 0 && (s === 0 || Math.random() < 0.6)) indThump(st.t, s === 0 ? 0.3 : 0.2);
+          else if (Math.random() < 0.22 + 0.3 * C) indTick(st.t, rnd(0.05, 0.12));
+          if (s === 14 && Math.random() < 0.35) indClang(st.t, 0.12);
+        }
+        st.t += e; st.step++;
+      }
+      if (now >= st.nextClang) { indClang(now + 0.05, rnd(0.08, 0.16)); st.nextClang = now + rnd(3, 9) / (0.5 + C); }
+      if (now >= st.nextHiss) { indHiss(now + 0.05, rnd(0.6, 1.6), rnd(0.05, 0.1)); st.nextHiss = now + rnd(6, 16); }
+      if (now >= st.nextRumble) { const d = rnd(6, 12); indRumble(now + 0.1, d, 0.5); st.nextRumble = now + d * rnd(0.5, 0.8); }
+      if (now >= st.nextMotor) { const d = rnd(10, 20); indMotor(now + 0.1, d, 0.14); st.nextMotor = now + d * rnd(0.7, 1.1); }
+    }
+
+    // ----- dungeon synth: тёмные лады, открытые квинты, лютня, флейта, колокол -----
+    function seqDungeon(now, la) {
+      const st = ST.dungeon, sc = scL(), base = 48 + root;
+      const beat = 60 / expMap(P.padDens.v, 44, 70);
+      if (now >= st.nextChord) {
+        if (st.bar % 8 === 7 && Math.random() < 0.5) st.prog = pick([[0, 5, 6, 4], [0, 3, 4, 0], [0, 6, 5, 4], [0, 0, 5, 6]]);
+        const d = st.prog[st.bar % st.prog.length]; st.bar++; st.deg = d;
+        const dur = expMap(1 - P.padDens.v, 9, 22);
+        const ks = C > 0.5 ? [0, 2, 4, 7] : [0, 4, 7];
+        ks.forEach((k, i) => {
+          let md = base + scaleNote(sc, d + k); while (md > 80) md -= 12;
+          padNote(mtof(md), now + 0.05 + i * rnd(0, 0.4), rnd(2, 3.5), dur * 0.6, rnd(3, 5), 0.13, B.dungeon, [1, 3]);
+        });
+        let dm = base - 12 + scaleNote(sc, d); while (dm < 30) dm += 12;
+        softNote('triangle', mtof(dm), now + 0.05, dur * 0.9, 0.2, B.dungeon);
+        st.nextChord = now + dur;
+      }
+      if (st.t < now) st.t = now + 0.1;
+      while (st.t < la) {
+        if (Math.random() < 0.38 + 0.25 * C) {
+          const f = mtof(melNote(st, sc));
+          if (Math.random() < 0.6) pluck(f, st.t, beat * 1.6, 0.1, B.dungeon, 0.5);
+          else softNote('triangle', f, st.t, beat * pick([1.5, 2, 3]), 0.08, B.dungeon);
+        }
+        st.t += beat * pick([1, 1, 1.5, 2]);
+      }
+      if (now >= st.nextBell) {
+        let bm = base + scaleNote(sc, st.deg); while (bm < 55) bm += 12; while (bm > 79) bm -= 12;
+        bellNote(mtof(bm), now + 0.05, 0.14, B.dungeon, 8);
+        st.nextBell = now + rnd(18, 40);
+      }
+    }
+
+    // ----- Space / Berlin School: повторяющаяся секвенция на 16 нот, фильтр медленно «дышит» -----
+    const berlinBpm = () => expMap(P.padDens.v, 84, 124);
+    function bSeqVoice(f, t0, dur, vel, acc) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 7;
+      const cut = expMap(P.padCut.v, 500, 4500) * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t0 * 0.11)));
+      lp.frequency.setValueAtTime(cut * (acc ? 1.8 : 1.2), t0);
+      lp.frequency.setTargetAtTime(cut * 0.55, t0 + 0.005, 0.09);
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(vel, t0 + 0.003);
+      env.gain.setTargetAtTime(0, t0 + dur * 0.55, 0.06);
+      lp.connect(env); env.connect(B.berlin);
+      [['sawtooth', -7, 0.45], ['sawtooth', 7, 0.45], ['square', 0, 0.3]].forEach(([ty, det, gg]) => {
+        const o = ctx.createOscillator(); o.type = ty; o.frequency.value = f; o.detune.value = det;
+        const g = ctx.createGain(); g.gain.value = gg;
+        o.connect(g); g.connect(lp); o.start(t0); o.stop(t0 + dur + 0.5);
+      });
+    }
+    function genBerlin() {
+      const seed = pick([[0, 4, 7, 4], [0, 2, 4, 2], [0, 7, 4, 7], [0, 4, 2, 4]]);
+      const pat = [];
+      for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) pat.push(seed[k] + (r === 3 && k === 3 ? pick([2, 4, -2]) : 0));
+      return pat;
+    }
+    function seqBerlin(now, la) {
+      const st = ST.berlin, sc = scL(), e = 60 / berlinBpm() / 4, base = 48 + root;
+      if (!st.pat.length) st.pat = genBerlin();
+      if (st.t < now) st.t = alignGrid(now, e);
+      while (st.t < la) {
+        const s = st.step % 16;
+        if (s === 0) {
+          if (st.bar % 4 === 0) {
+            st.deg = st.prog[(st.bar >> 2) % st.prog.length];
+            [0, 2, 4].forEach((k, i) => {
+              let md = base + scaleNote(sc, st.deg + k); while (md > 76) md -= 12;
+              padNote(mtof(md), st.t + i * 0.05, 3, e * 32, 4, 0.1, B.berlin, [1, 6]);
+            });
+            let bm = base - 12 + scaleNote(sc, st.deg); while (bm < 30) bm += 12;
+            softNote('sine', mtof(bm), st.t, e * 60, 0.18, B.berlin);
+            if (Math.random() < 0.5) st.prog = pick(PROGS);
+          }
+          if (st.bar % 2 === 1 && Math.random() < 0.5) st.pat[randInt(16)] = pick([0, 2, 4, 7, 9]);
+          st.bar++;
+        }
+        let md = base + 12 + scaleNote(sc, st.deg + st.pat[s]);
+        while (md > 84) md -= 12;
+        while (md < 45) md += 12;
+        bSeqVoice(mtof(md), st.t, e * 0.9, s % 4 === 0 ? 0.12 : 0.085, s % 4 === 0);
+        st.t += e; st.step++;
+      }
+      if (now >= st.nextLead) {
+        let lm = base + 24 + scaleNote(sc, st.deg + pick([0, 2, 4, 7])); while (lm > 88) lm -= 12;
+        softNote('triangle', mtof(lm), now + 0.05, rnd(4, 8), 0.07, B.berlin);
+        st.nextLead = now + rnd(8, 16);
+      }
+    }
+
+    // ----- Lofi / Chillwave / Vapour: пластинка, ленточное «плавание» тона, 9-аккорды, мягкий бит -----
+    const crackBuf = ctx.createBuffer(1, sr * 4, sr);
+    {
+      const d = crackBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) {
+        let v = (Math.random() * 2 - 1) * 0.012;
+        if (Math.random() < 0.0012) v += (Math.random() * 2 - 1) * rnd(0.1, 0.5);
+        d[i] = v;
+      }
+    }
+    {
+      const cs = ctx.createBufferSource(); cs.buffer = crackBuf; cs.loop = true; cs.start();
+      const chp = ctx.createBiquadFilter(); chp.type = 'highpass'; chp.frequency.value = 900;
+      const cg = ctx.createGain(); cg.gain.value = 0.5;
+      cs.connect(chp); chp.connect(cg); cg.connect(B.lofi);
+    }
+    function tapeKey(f, t0, vel, dec) {
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = rnd(1400, 2600); lp.Q.value = 0.5;
+      const wob = ctx.createOscillator(); wob.frequency.value = rnd(0.35, 0.9);
+      const wg = ctx.createGain(); wg.gain.value = rnd(8, 20); wob.connect(wg);
+      const car = ctx.createOscillator(); car.frequency.value = f; wg.connect(car.detune);
+      const mod = ctx.createOscillator(); mod.frequency.value = f; wg.connect(mod.detune);
+      const mg = ctx.createGain();
+      mg.gain.setValueAtTime(f * 1.1, t0); mg.gain.setTargetAtTime(f * 0.05, t0, 0.45);
+      mod.connect(mg); mg.connect(car.frequency);
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(vel, t0 + 0.008);
+      env.gain.setTargetAtTime(0, t0 + 0.02, dec / 3);
+      car.connect(lp); lp.connect(env); env.connect(B.lofi);
+      const end = t0 + dec * 1.5 + 0.5;
+      car.start(t0); mod.start(t0); wob.start(t0);
+      car.stop(end); mod.stop(end); wob.stop(end);
+    }
+    function lfKick(t0, vel) {
+      const o = ctx.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(100, t0); o.frequency.exponentialRampToValueAtTime(46, t0 + 0.1);
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + 0.004); g.gain.setTargetAtTime(0, t0 + 0.02, 0.07);
+      o.connect(g); g.connect(B.lofi); o.start(t0); o.stop(t0 + 0.6);
+    }
+    function lfSnare(t0, vel) {
+      const n = noiseOne(1, t0, 0.2), bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q.value = 0.9;
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + 0.003); g.gain.setTargetAtTime(0, t0 + 0.01, 0.05);
+      n.connect(bp); bp.connect(g); g.connect(B.lofi);
+    }
+    function lfHat(t0, vel) {
+      const n = noiseOne(2, t0, 0.08), hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
+      const g = ctx.createGain(); g.gain.value = 0;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + 0.002); g.gain.setTargetAtTime(0, t0 + 0.005, 0.015);
+      n.connect(hp); hp.connect(g); g.connect(B.lofi);
+    }
+    function seqLofi(now, la) {
+      const st = ST.lofi, sc = scL(), base = 48 + root;
+      const beat = 60 / expMap(P.padDens.v, 62, 86), e = beat / 2;
+      if (st.t < now) st.t = alignGrid(now, e);
+      while (st.t < la) {
+        const s = st.step % 8, tt = st.t + (s % 2 ? e * 0.3 : 0);
+        if (s === 0) {
+          const d = st.prog[st.bar % st.prog.length]; st.bar++; st.deg = d;
+          if (st.bar % 8 === 0 && Math.random() < 0.5) st.prog = pick(PROGS);
+          st.semis = [0, 1, 2, 3, 4].map(k => scaleNote(sc, d + 2 * k));
+          if (st.bar % 2 === 1) st.semis.slice(0, 3).forEach(x => {
+            let md = base + x; while (md > 70) md -= 12;
+            padNote(mtof(md), tt, 1.5, beat * 5, 3, 0.07, B.lofi, [0, 8]);
+          });
+        }
+        if (s === 0 || (s === 4 && Math.random() < 0.6)) {
+          st.semis.forEach((x, i) => {
+            let md = base + 12 + x; while (md > 79) md -= 12;
+            tapeKey(mtof(md), tt + i * 0.035 + rnd(0, 0.02), s === 0 ? 0.075 : 0.055, 2.6);
+          });
+        }
+        if (s === 0 || s === 5) {
+          let bm = base - 12 + scaleNote(sc, st.deg); while (bm < 32) bm += 12; while (bm > 52) bm -= 12;
+          softNote('sine', mtof(bm), tt, beat * 1.2, 0.2, B.lofi);
+        }
+        if ((s % 2 === 1 || s === 4) && Math.random() < 0.18 + 0.25 * C) tapeKey(mtof(melNote(st, sc)), tt, 0.055, 1.6);
+        if (C > 0.6) {
+          if (s === 0 || s === 5) lfKick(tt, 0.16);
+          if (s === 2 || s === 6) lfSnare(tt, 0.08);
+          if (s % 2 === 1 && Math.random() < 0.5) lfHat(tt, 0.035);
+        }
+        st.t += e; st.step++;
+      }
+    }
+
+    // ----- Krell-патч: самозамыкающаяся огибающая → случайная нота (S&H) → wavefolder → LPG → реверб.
+    //       Чем выше нота, тем короче её огибающая: низкие тянутся, высокие — капли. -----
+    const foldCurve = new Float32Array(2048);
+    for (let i = 0; i < 2048; i++) foldCurve[i] = Math.sin(((i / 2047) * 2 - 1) * 2.2);
+    function krellNote(f, t0, dec, att, vel, bright) {
+      const o = ctx.createOscillator();
+      o.setPeriodicWave(WAVES[Math.random() < 0.5 ? WV.a : WV.b]); o.frequency.value = f;
+      const dr = ctx.createGain(); dr.gain.value = rnd(0.6, 1.3);
+      const fold = ctx.createWaveShaper(); fold.curve = foldCurve;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 1.2;      // LPG: фильтр и громкость падают вместе
+      lp.frequency.setValueAtTime(clamp(f * (3 + 7 * bright), 300, 16000), t0);
+      lp.frequency.setTargetAtTime(clamp(f * 1.1, 80, 8000), t0 + att, Math.max(0.03, dec * 0.22));
+      const env = ctx.createGain(); env.gain.value = 0;
+      env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(vel, t0 + att);
+      env.gain.setTargetAtTime(0, t0 + att, dec / 3);
+      const pn = ctx.createStereoPanner(); pn.pan.value = rnd(-0.6, 0.6);
+      o.connect(dr); dr.connect(fold); fold.connect(lp); lp.connect(env); env.connect(pn); pn.connect(B.krell);
+      o.start(t0); o.stop(t0 + att + dec * 1.8 + 0.3);
+    }
+    function seqKrell(now) {
+      const st = ST.krell, sc = scL(), la = now + 0.5;
+      const nv = C > 0.6 ? 2 : 1;                       // на пике плотности два независимых патча
+      for (let k = 0; k < nv; k++) {
+        const v = st.v[k];
+        if (v.next < now) v.next = now + (v.next === 0 ? rnd(0.1, 1.5) : 0.05);
+        let guard = 0;
+        while (v.next < la && guard++ < 8) {
+          v.center = clamp(v.center + gauss() * 2.5, 52, 80);          // регистр медленно дрейфует
+          const cands = [];                                              // sample & hold: случайная высота, квантованная в лад
+          for (let m = Math.ceil(v.center - 20); m <= Math.floor(v.center + 20); m++) {
+            if (sc.includes((((m - root) % 12) + 12) % 12)) cands.push(m);
+          }
+          const f = mtof(clamp(pick(cands.length ? cands : [60]), 36, 96));
+          v.mod = clamp(v.mod * Math.exp(gauss() * 0.14), 0.55, 1.8);    // медленное случайное напряжение на время спада
+          const dec = clamp(5.5 * Math.pow(110 / f, 0.85) * v.mod, 0.1, 9);
+          const att = clamp(0.004 + 0.03 * Math.pow(110 / f, 0.5), 0.004, 0.06);
+          const vel = 0.13 * clamp(Math.pow(220 / f, 0.25), 0.55, 1.2);
+          krellNote(f, v.next, dec, att, vel, Math.random());
+          v.next += att + dec * rnd(0.35, 0.6);                          // конец цикла огибающей (EOC) запускает следующую ноту
+        }
+      }
+    }
+
+    function ambTick() {
+      const now = ctx.currentTime, la = now + 0.5;
+      if (W.pad > 0.04 && now >= ST.pad.next) playChord(now);
+      if (W.bells > 0.04) {
+        const sc = scL(), f = linMap(1 - P.padDens.v, 0.7, 1.4);
+        ST.bells.loops.slice(0, 1 + Math.round(C * 6)).forEach(l => {
+          if (l.next === 0) l.next = now + rnd(2, l.p);
+          if (now >= l.next) {
+            let md = 60 + root + scaleNote(sc, l.idx);
+            while (md > 86) md -= 12; while (md < 52) md += 12;
+            bellNote(mtof(md), now + 0.05, 0.2 * rnd(0.6, 1), B.bells, rnd(5, 9));
+            l.next = now + l.p * f * rnd(0.97, 1.03);
+            if (Math.random() < 0.15) l.idx = randInt(14) - 4;
+          }
+        });
+      }
+      if (W.glass > 0.04 && now >= ST.glass.next) {
+        glassNote();
+        ST.glass.next = now - Math.log(1 - Math.random()) * expMap(1 - P.padDens.v, 1.5, 7) / (0.4 + C);
+      }
+      if (W.muzak > 0.04) seqMuzak(now, la);
+      if (W.elevator > 0.04) seqElev(now, la);
+      if (W.micro > 0.04) seqMicro(now, la);
+      if (W.arp > 0.04) seqArp(now, la);
+      if (W.bseq > 0.04) seqBass(now, la);
+      if (W.ind > 0.04) seqIndustrial(now, la);
+      if (W.dungeon > 0.04) seqDungeon(now, la);
+      if (W.berlin > 0.04) seqBerlin(now, la);
+      if (W.lofi > 0.04) seqLofi(now, la);
+      if (W.krell > 0.04) seqKrell(now);
+      if (W.glitch > 0.04) glitchTick(now);
+    }
+
+    // =====================================================
+    //    ДИРЕКТОР: всё меняется непрерывно, раз в 30–60 секунд
+    // =====================================================
+    const activeL = () => LAYERS.filter(n => WT[n] > 0.05);
+    function pickLayer(cands) {
+      const c = cands.filter(n => !(avoid[n] > 0));
+      const pool = c.length ? c : cands;
+      let tot = 0; pool.forEach(n => tot += LWEIGHT[n]);
+      let r = Math.random() * tot;
+      for (const n of pool) { r -= LWEIGHT[n]; if (r <= 0) return n; }
+      return pool[pool.length - 1];
+    }
+    function setTc() { LAYERS.forEach(n => WTc[n] = (MAINS.includes(n) ? rnd(6, 10) : rnd(6, 11)) * morphK); }
+    function shiftRoot(fast) {
+      if (rootPending) return;
+      rootPending = true;
+      const nr = (root + pick([5, 7, 2, 10, 3, 9, 1, 11])) % 12;
+      setTimeout(() => { root = nr; rootPending = false; }, fast ? rnd(300, 2500) : rnd(1000, 20000));
+    }
+    function pickMood() {
+      const jazzy = WT.muzak > 0.3 || WT.elevator > 0.3 || WT.lofi > 0.3;
+      const dark = WT.dungeon > 0.3 || WT.berlin > 0.3;
+      if (dark && Math.random() < 0.75) return pick([2, 4, 5, 7, 9]);   // минор, дорийский, фригийский, пентатоника, гарм. минор
+      return (jazzy && Math.random() < 0.75) ? pick(JAZZ) : randInt(MOODS.length);
+    }
+    function scaleStep() {
+      const adds = [], rems = [];
+      for (let i = 0; i < 12; i++) if (cur[i] !== tgt[i]) (tgt[i] ? adds : rems).push(i);
+      if (!adds.length && !rems.length) return;
+      const count = cur.filter(Boolean).length, tcount = tgt.filter(Boolean).length;
+      // число ступеней держим рядом с целевым, чтобы в середине морфинга не получался кластер
+      if (count > tcount && rems.length) cur[pick(rems)] = false;
+      else if (count < tcount && adds.length) cur[pick(adds)] = true;
+      else if (rems.length && count > 5) cur[pick(rems)] = false;
+      else if (adds.length) cur[pick(adds)] = true;
+    }
+    function swapWave() {
+      const nw = randInt(WAVES.length);
+      if (Math.random() < 0.5) WV.a = nw; else WV.b = nw;
+      if (WV.a === WV.b) WV.b = (WV.b + 1) % WAVES.length;
+      WV.mix = clamp(WV.mix + gauss() * 0.2, 0.1, 0.9);
+    }
+
+    function retarget(fast, fromLiked) {
+      const now = ctx.currentTime;
+      for (const n in avoid) if (--avoid[n] <= 0) delete avoid[n];
+      morphK = fast ? 0.4 : 1;
+      if (fast) fastUntil = now + 60;
+      setTc();
+
+      if (fromLiked && liked.length) {
+        const st = pick(liked);
+        LAYERS.forEach(n => WT[n] = st.WT[n]);
+        C = st.C; trend = 0;
+        const at0 = TEXTS.filter(n => WT[n] > 0.05);
+        if (at0.length && at0.length < TEXTS.length) { const r = pick(at0), m = pickLayer(TEXTS.filter(n => !at0.includes(n))); WT[r] = 0; WT[m] = rnd(0.25, 0.65); }
+        root = st.root; rootPending = false; shiftRoot(false);
+        loadMood(tgt, Math.random() < 0.5 ? st.mood : randInt(MOODS.length));
+        spaceTarget = clamp(st.space + gauss() * 0.15);
+        shimTarget = clamp(st.shim + gauss() * 0.15, 0, 0.95);
+      } else {
+        // «плотность»: плавные волны от максимализма к минимализму и обратно
+        trend = trend * 0.7 + gauss() * 0.12;
+        if (C > 0.85) trend -= 0.12;
+        if (C < 0.12) trend += 0.12;
+        if (Math.random() < 0.15) trend = (Math.random() < 0.5 ? -1 : 1) * rnd(0.2, 0.35);
+        C = clamp(C + trend, 0.02, 1);
+
+        // основной стиль: один (на пике плотности иногда два); смена раз в 2–3 шага, плавный кроссфейд
+        let am = MAINS.filter(n => WT[n] > 0.05);
+        const nm = (C > 0.75 && Math.random() < 0.6) || (C > 0.5 && Math.random() < 0.2) ? 2 : 1;
+        const newMain = () => pickLayer(MAINS.filter(n => !am.includes(n)));
+        if (fast) mainHold = 0;
+        mainHold--;
+        if (am.length > nm) { const r = pick(am); WT[r] = 0; am = am.filter(x => x !== r); }
+        else if (am.length < nm) { const a = newMain(); WT[a] = rnd(0.7, 1); am.push(a); }
+        else if (mainHold <= 0) { const r = pick(am), a = newMain(); WT[r] = 0; WT[a] = rnd(0.7, 1); }
+        if (mainHold <= 0) mainHold = 1 + randInt(2);
+        MAINS.filter(n => WT[n] > 0.05).forEach(n => { if (Math.random() < 0.5) WT[n] = clamp(WT[n] + gauss() * 0.1, 0.6, 1); });
+
+        // фон: шумы и призвуки, тихо; чем плотнее, тем их больше (но не больше одного изменения за шаг)
+        let at = TEXTS.filter(n => WT[n] > 0.05);
+        const nt = Math.max(1, Math.round(C * 4));
+        const newTex = () => pickLayer(TEXTS.filter(n => !at.includes(n)));
+        if (at.length > nt) { const r = pick(at); WT[r] = 0; at = at.filter(x => x !== r); }
+        else if (at.length < nt) { const a = newTex(); WT[a] = rnd(0.25, 0.65); at.push(a); }
+        if (Math.random() < 0.4 && at.length && at.length < TEXTS.length) { const r = pick(at), a = newTex(); WT[r] = 0; WT[a] = rnd(0.25, 0.65); }
+        TEXTS.filter(n => WT[n] > 0.05).forEach(n => { if (Math.random() < 0.5) WT[n] = clamp(WT[n] + gauss() * 0.1, 0.2, 0.7); });
+
+        if (fast || Math.random() < 0.45) shiftRoot(fast);
+        if (fast || Math.random() < 0.4) loadMood(tgt, pickMood());
+        spaceTarget = Math.random() < 0.3 ? rnd(0, 1) : clamp(spaceTarget + gauss() * 0.25);
+        shimTarget = Math.random() < 0.4 ? rnd(0, 0.9) : clamp(shimTarget + gauss() * 0.2, 0, 0.95);
+      }
+      if (fast || Math.random() < 0.5) swapWave();
+      if (Math.random() < 0.5) droneOff = pick([0, 0, 0, 7, 7, 5, 12]);
+      spaceTc = rnd(10, 20) * morphK;
+      // широкие прыжки параметров: цвет шума, регистры, плотности
+      const nj = 4 + randInt(4);
+      for (let i = 0; i < nj; i++) anchor[pick(NAMES)] = rnd(0.05, 0.95);
+      ['wColor', 'mColor', 'brColor', 'wnColor'].forEach(n => { if (Math.random() < 0.6) anchor[n] = rnd(0, 1); });
+      if (WT.arp > 0.3 || WT.bseq > 0.3) {              // эхо в такт: пунктирная восьмая, длинный хвост
+        const dt = 3 * 60 / ambBpm() / 4;
+        anchor.dTime = clamp(Math.log(dt / 0.12) / Math.log(7.5));
+        anchor.dWet = rnd(0.45, 0.85); anchor.dFb = rnd(0.4, 0.7);
+      }
+      if (WT.berlin > 0.3 && !(WT.arp > 0.3 || WT.bseq > 0.3)) {
+        const dt = 3 * 60 / berlinBpm() / 4;
+        anchor.dTime = clamp(Math.log(dt / 0.12) / Math.log(7.5));
+        anchor.dWet = rnd(0.45, 0.8); anchor.dFb = rnd(0.4, 0.65);
+      }
+      nextRetarget = now + rnd(30, 45);
+      nameScene(fast ? 1.5 : 4);
+    }
+
+    // ---------- лайк / дизлайк ----------
+    const yesB = document.getElementById('yes'), noB = document.getElementById('no');
+    const flash = b => { b.classList.add('on'); setTimeout(() => b.classList.remove('on'), 450); };
+    function like() {
+      flash(yesB); V.pulse('like');
+      const now = ctx.currentTime;
+      const snapWT = {}; LAYERS.forEach(n => snapWT[n] = WT[n]);
+      liked.push({ WT: snapWT, C, root, mood: moodIdx, space: spaceV, shim: shimV });
+      if (liked.length > 12) liked.shift();
+      lockUntil = now + 90;
+      lockTotal = lockUntil - now;
+      nextRetarget = lockUntil; nextJitter = now + 20;
+      NAMES.forEach(n => anchor[n] = P[n].v);
+      S = 0.05; goodStreak = 0;
+      spaceTarget = spaceV; shimTarget = shimV;
+    }
+    function dislike() {
+      flash(noB); V.pulse('dislike');
+      lockUntil = 0;
+      LAYERS.forEach(n => { if (W[n] > 0.3) avoid[n] = 2; });
+      retarget(true, false);
+      S = 0.3;
+      NAMES.forEach(n => {
+        anchor[n] = rnd(0.1, 0.9);
+        P[n].t = clamp(anchor[n] + gauss() * S, 0.02, 0.98);
+        P[n].rate = 1 - Math.exp(-0.05 / rnd(2, 4));
+      });
+    }
+    yesB.addEventListener('click', like);
+    noB.addEventListener('click', dislike);
+    addEventListener('keydown', e => {
+      if (e.key === 'ArrowUp' || e.key === 'l' || e.key === 'L') like();
+      if (e.key === 'ArrowDown' || e.key === 'd' || e.key === 'D') dislike();
+    });
+
+    const infoEl = document.getElementById('info');
+    function updateInfo() {
+      const now = ctx.currentTime;
+      const nm = n => LNAMES[LAYERS.indexOf(n)];
+      const ms = MAINS.filter(n => W[n] > 0.12).sort((a, b) => W[b] - W[a]).map(nm);
+      const ts = TEXTS.filter(n => W[n] > 0.08).sort((a, b) => W[b] - W[a]).map(nm);
+      const sp = spaceName(spaceV) + (shimNode && shimV > 0.3 ? ' + шиммер' : '');
+      infoEl.textContent = `${ms.join(' ⇄ ') || 'тишина'}${ts.length ? '  +  ' + ts.join(', ') : ''}  —  ${NOTES[root]} ${MOODS[moodIdx].n}  —  ${sp}  —  плотность ${Math.round(C * 100)}%`
+        + (now < lockUntil ? '  —  залип' : '');
+    }
+
+    // =====================================================
+    //   НАЗВАНИЯ СЦЕН (только читает состояние, на звук не влияет)
+    // =====================================================
+    const NM = (() => {
+      const N = s => s.split(";").map(x => { const [a, g, b] = x.trim().split("|"); return { n: a, g, r: b }; });
+      const A = s => s.split(";").map(x => x.trim());
+      const END = { y: ["ый", "ая", "ое"], h: ["ий", "ая", "ое"], s: ["ий", "яя", "ее"], o: ["ой", "ая", "ое"] };
+      const adj = (e, g) => { const [st, t] = e.split(":"); return st + END[t][g === "m" ? 0 : g === "f" ? 1 : 2]; };
+      const STYLE = {
+        pad:      { n: N("рассвет|m|рассвета;прилив|m|прилива;туман|m|тумана;дыхание|n|дыхания;облако|n|облака;побережье|n|побережья;сад|m|сада;полдень|m|полудня;лагуна|f|лагуны;тепло|n|тепла"), p: A("на пляже;над заливом;у воды;в траве;за облаками;на рассвете") },
+        bass:     { n: N("глубина|f|глубины;толща|f|толщи;якорь|m|якоря;пучина|f|пучины;фундамент|m|фундамента;ядро|n|ядра;бездна|f|бездны;недра|n|недр"), p: A("на дне;под водой;в глубине;под землёй") },
+        elevator: { n: N("лифт|m|лифта;этаж|m|этажа;вестибюль|m|вестибюля;холл|m|холла;приёмная|f|приёмной;пауза|f|паузы;ожидание|n|ожидания;кабина|f|кабины"), p: A("на семнадцатом этаже;в холле;в вестибюле;между этажами") },
+        muzak:    { n: N("витрина|f|витрины;универмаг|m|универмага;фонтан|m|фонтана;променад|m|променада;пассаж|m|пассажа;открытка|f|открытки;веранда|f|веранды"), p: A("в универмаге;в пассаже;у фонтана;на веранде;в торговом центре") },
+        micro:    { n: N("паттерн|m|паттерна;фаза|f|фазы;пульс|m|пульса;сдвиг|m|сдвига;зерно|n|зерна;повтор|m|повтора;цикл|m|цикла;шаг|m|шага"), p: A("в цикле;на повторе;в фазе;на одном шаге") },
+        glitch:   { n: N("сбой|m|сбоя;осколок|m|осколка;артефакт|m|артефакта;помеха|f|помехи;обрыв|m|обрыва;ошибка|f|ошибки;трещина|f|трещины"), p: A("в буфере;в сети;на перемотке;за экраном;в памяти") },
+        bells:    { n: N("колокол|m|колокола;звон|m|звона;капель|f|капели;перезвон|m|перезвона;звонница|f|звонницы;эхо|n|эха"), p: A("на колокольне;над городом;в часовне;в звоннице") },
+        glass:    { n: N("стекло|n|стекла;хрусталь|m|хрусталя;иней|m|инея;льдинка|f|льдинки;призма|f|призмы;витраж|m|витража;грань|f|грани"), p: A("за стеклом;в хрустале;под льдом;в призме") },
+        arp:      { n: N("орбита|f|орбиты;созвездие|n|созвездия;комета|f|кометы;полёт|m|полёта;зонд|m|зонда;квазар|m|квазара;туманность|f|туманности;старт|m|старта"), p: A("на орбите;у горизонта;за гранью;среди звёзд;в невесомости") },
+        bseq:     { n: N("сигнал|m|сигнала;реактор|m|реактора;маршрут|m|маршрута;разгон|m|разгона;импульс|m|импульса;двигатель|m|двигателя;курс|m|курса"), p: A("на разгоне;в реакторе;на борту;в ядре") },
+        ind:      { n: N("машинный зал|m|машинного зала;конвейер|m|конвейера;цех|m|цеха;скрежет|m|скрежета;ржавчина|f|ржавчины;арматура|f|арматуры;турбина|f|турбины;завод|m|завода"), p: A("в машинном зале;на заводе;под эстакадой;в цеху;в ангаре") },
+        dungeon:  { n: N("подземелье|n|подземелья;склеп|m|склепа;башня|f|башни;факел|m|факела;крипта|f|крипты;чертог|m|чертога;древность|f|древности"), p: A("в подземелье;в склепе;в башне;при свете факела;под сводами") },
+        berlin:   { n: N("Рубикон|m|Рубикона;бесконечность|f|бесконечности;горизонт событий|m|горизонта событий;транзит|m|транзита;дрейф|m|дрейфа;стратосфера|f|стратосферы;фазовый сдвиг|m|фазового сдвига;синхрон|m|синхрона"), p: A("в стратосфере;на высоте;в транзите;в дрейфе") },
+        lofi:     { n: N("плёнка|f|плёнки;кассета|f|кассеты;дождь|m|дождя;закат|m|заката;подоконник|m|подоконника;неон|m|неона;ночной автобус|m|ночного автобуса;окно|n|окна"), p: A("на подоконнике;в наушниках;на кассете;у окна;на заднем сиденье;под дождём") },
+        krell:    { n: N("ток|m|тока;искра|f|искры;разряд|m|разряда;осциллятор|m|осциллятора;случайность|f|случайности;патч|m|патча;напряжение|n|напряжения"), p: A("в петле;на патч-панели;в цепи;под напряжением") },
+      };
+      const TEX = {
+        hum: A("гула;ночи;проводов"), breath: A("дыхания;шёпота;сна"), water: A("дождя;воды;ручья;капель"),
+        wind: A("ветра;степи;пустоты"), metal: A("ржавчины;металла;проволоки"), grain: A("пыли;песка;зёрен"),
+      };
+      const FEEL = {
+        joy:    { a: A("светл:y;золот:o;солнечн:y;тёпл:y;ясн:y;лёгк:h;лучезарн:y"), n: N("радость|f|радости;свет|m|света;сияние|n|сияния;восторг|m|восторга;улыбка|f|улыбки;благодать|f|благодати") },
+        wonder: { a: A("хрустальн:y;неземн:y;зыбк:h;прозрачн:y;невесом:y;далёк:h"), n: N("чудо|n|чуда;мерцание|n|мерцания;грёза|f|грёзы;дымка|f|дымки;сон|m|сна;изумление|n|изумления") },
+        sorrow: { a: A("тих:h;печальн:y;пасмурн:y;блёкл:y;сер:y;осенн:s;одинок:h"), n: N("грусть|f|грусти;тоска|f|тоски;печаль|f|печали;слеза|f|слезы;разлука|f|разлуки;тишина|f|тишины") },
+        dread:  { a: A("мрачн:y;чёрн:y;холодн:y;глух:o;ржав:y;тревожн:y;гулк:h"), n: N("тревога|f|тревоги;тень|f|тени;мрак|m|мрака;страх|m|страха;предчувствие|n|предчувствия;холод|m|холода;рок|m|рока") },
+        still:  { a: A("пуст:o;неподвижн:y;безмолвн:y;ровн:y;бел:y;бескрайн:y"), n: N("покой|m|покоя;тишина|f|тишины;пустота|f|пустоты;штиль|m|штиля;вечность|f|вечности;безмолвие|n|безмолвия") },
+        nostal: { a: A("давн:s;старинн:y;забыт:y;медов:y;ностальгическ:h;далёк:h"), n: N("память|f|памяти;воспоминание|n|воспоминания;ностальгия|f|ностальгии;детство|n|детства;прошлое|n|прошлого") },
+      };
+      // лад → ощущение (порядок как в MOODS)
+      const MOOD_FEEL = ["wonder", "joy", "sorrow", "still", "nostal", "dread", "joy", "sorrow", "wonder", "dread"];
+      const HI = A("бескрайн:y;густ:y;необъятн:y;могуч:y"), LO = A("едва слышн:y;тонк:h;хрупк:h;крошечн:y");
+      const SP_SMALL = A("в тесной комнате;за стеной;в шкафу;в маленькой студии"), SP_BIG = A("под куполом;в соборе;в бескрайности;в огромном зале"), SP_SHIM = A("в сиянии;в мерцании");
+      // выдуманные слова: звучание зависит от ощущения и стиля
+      const ON = { bright: "лмснвшф", dark: "гздкбрхт", soft: "нмлсв" };
+      const VO = { bright: ["и", "э", "а", "е", "я"], dark: ["о", "у", "а"], soft: ["о", "а", "е", "у"] };
+      const CO = { bright: ["ия", "эль", "ай", "ис", "ана", "ера", "ея"], dark: ["ум", "ор", "ар", "ок", "аз", "уль", "ург"], soft: ["ела", "ин", "ора", "ена", "ей", "ава", "ол"],
+                   sci: ["ус", "ион", "акс", "ар", "он", "ум", "эль"] };
+      const TONE = { joy: "bright", wonder: "bright", sorrow: "soft", still: "soft", nostal: "soft", dread: "dark" };
+      const SCI = ["berlin", "arp", "krell", "bseq", "micro"];
+      const invent = (feel, style) => {
+        const t = TONE[feel], on = ON[t], vo = VO[t];
+        let w = "";
+        const syl = 1 + randInt(2);
+        for (let i = 0; i < syl; i++) w += on[randInt(on.length)] + pick(vo);
+        w += on[randInt(on.length)] + pick(SCI.includes(style) && Math.random() < 0.6 ? CO.sci : CO[t]);
+        return w.replace(/(.)\1+/g, "$1");
+      };
+      const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+      const recent = [];
+      return {
+        FEEL: MOOD_FEEL,
+        make(styles, texs, moodI, C, space, shim) {
+          const feel = MOOD_FEEL[moodI], F = FEEL[feel];
+          const st = styles.length ? styles : ["bass"];
+          const s1 = st[0], S1 = STYLE[s1], n1 = pick(S1.n);
+          const tex = texs.length ? pick(texs) : null;
+          const spacePh = shim > 0.5 && Math.random() < 0.5 ? pick(SP_SHIM) : space > 0.7 ? pick(SP_BIG) : space < 0.25 ? pick(SP_SMALL) : null;
+          const fa = () => adj(Math.random() < 0.25 && (C > 0.75 || C < 0.2) ? pick(C > 0.75 ? HI : LO) : pick(F.a), n1.g);
+          const T = [
+            () => n1.n,
+            () => fa() + " " + n1.n,
+            () => fa() + " " + n1.n,
+            () => n1.n + " " + pick(F.n).r,
+            () => { const f = pick(F.n); return f.n + " " + pick(S1.p); },
+            () => n1.n + " " + pick(S1.p),
+            () => pick(F.n).n + (spacePh ? " " + spacePh : " " + pick(S1.p)),
+            () => invent(feel, s1),
+            () => invent(feel, s1) + " · " + n1.n,
+            () => invent(feel, s1) + " · " + fa() + " " + n1.n,
+          ];
+          if (tex) T.push(() => n1.n + " " + pick(TEX[tex]), () => pick(F.n).n + " " + pick(TEX[tex]));
+          if (spacePh) T.push(() => n1.n + " " + spacePh, () => fa() + " " + n1.n + " " + spacePh);
+          if (st.length > 1) { const n2 = pick(STYLE[st[1]].n); T.push(() => n1.n + " и " + n2.n, () => n1.n + " и " + n2.n, () => fa() + " " + n1.n + " · " + n2.n); }
+          let name = "";
+          for (let k = 0; k < 8; k++) {
+            name = cap(pick(T)());
+            if (!recent.includes(name)) break;
+          }
+          recent.push(name); if (recent.length > 24) recent.shift();
+          return name;
+        }
+      };
+    })();
+    const sceneEl = document.getElementById("scene");
+    let sceneTimer = 0, sceneShown = "";
+    function moodOfArr(arr) {
+      let best = 0, bs = -99;
+      MOODS.forEach((m, i) => { let s = 0; for (let p = 0; p < 12; p++) s += (arr[p] === m.pcs.includes(p)) ? 1 : -1; if (s > bs) { bs = s; best = i; } });
+      return best;
+    }
+    function nameScene(delay) {
+      const styles = MAINS.filter(n => WT[n] > 0.05).sort((a, b) => WT[b] - WT[a]);
+      const texs = TEXTS.filter(n => WT[n] > 0.05);
+      const name = NM.make(styles, texs, moodOfArr(tgt), C, spaceTarget, shimTarget);
+      clearTimeout(sceneTimer);
+      sceneTimer = setTimeout(() => {
+        sceneEl.classList.remove("show");
+        setTimeout(() => { sceneEl.textContent = name; sceneShown = name; sceneEl.classList.add("show"); }, 900);
+      }, delay * 1000);
+      return name;
+    }
+
+    function sceneTick() {
+      const now = ctx.currentTime;
+      if (now >= nextRetarget) {
+        const wasLocked = lockUntil > 0;
+        lockUntil = 0;
+        retarget(false, wasLocked && liked.length > 0 && Math.random() < 0.5);
+      }
+      if (now < lockUntil && now >= nextJitter) {      // залипли: только лёгкое покачивание
+        activeL().forEach(n => WT[n] = clamp(WT[n] + gauss() * 0.05, MAINS.includes(n) ? 0.6 : 0.15, MAINS.includes(n) ? 1 : 0.7));
+        spaceTarget = clamp(spaceTarget + gauss() * 0.05);
+        nextJitter = now + 20;
+      }
+      if (now >= scaleNext) { scaleStep(); scaleNext = now + (now < fastUntil ? 3 : 7); }
+      if (now >= nextWave) { nextWave = now + rnd(25, 45); if (lockUntil <= now) swapWave(); }
+      if (now >= infoT) { updateInfo(); infoT = now + 1.5; }
+    }
+
+    // ---------- применение параметров ----------
+    function update() {
+      const now = ctx.currentTime;
+      for (const n of NAMES) { const p = P[n]; p.v += (p.t - p.v) * p.rate; }
+      let sumW = 0;
+      LAYERS.forEach(n => { W[n] += (WT[n] - W[n]) * (1 - Math.exp(-0.05 / WTc[n])); sumW += W[n]; });
+      const kS = 1 - Math.exp(-0.05 / spaceTc);
+      spaceV += (spaceTarget - spaceV) * kS;
+      shimV += (shimTarget - shimV) * kS;
+      moodIdx = nearestMood();
+      const set = (param, val, tc = 0.15) => param.setTargetAtTime(val, now, tc);
+
+      LAYERS.forEach(n => set(B[n].gain, Math.pow(W[n], 1.2) * BUSBASE[n], 0.15));
+      set(layerSum.gain, 1 / Math.sqrt(Math.max(1, sumW * 0.7)), 0.6);
+
+      // бас
+      const bf = mtof(root + 28 + droneOff);
+      const det = linMap(P.bassDet.v, 2, 35);
+      bOsc.forEach((o, i) => {
+        set(o.frequency, i === 3 ? bf * 0.5 : bf, 5);
+        set(o.detune, [-1, 0, 1, 0][i] * det);
+      });
+      set(bassLP.frequency, expMap(P.bassCut.v, 70, 700));
+      set(bassOut.gain, 0.1 + 0.7 * P.bassLvl.v);
+
+      // гул
+      const hf = mtof(root + 40 + droneOff), hexp = linMap(P.hum.v, 0.6, 2.2);
+      humO.forEach((o, i) => set(o.frequency, hf * (i + 1), 5));
+      humG.forEach((g, i) => set(g.gain, 0.5 / Math.pow(i + 1, hexp), 1.5));
+      set(humOut.gain, 1.2);
+
+      // дыхание
+      const bf0 = mtof(root + 48 + droneOff), bq = expMap(P.brQ.v, 20, 120);
+      brF.forEach((b, i) => {
+        const f = Math.min(9000, bf0 * (i + 1) * (1 + 0.003 * i));
+        set(b.bp.frequency, f, 3); set(b.bp.Q, bq);
+        const bw = Math.max(1e-4, (f / bq) / (sr / 2));
+        set(b.g.gain, 0.35 / Math.sqrt(bw) / (1 + i * 0.6), 1);
+      });
+      brSrc.set(P.brColor.v, now);
+
+      // вода
+      const wc = expMap(P.wCenter.v, 250, 5000);
+      set(wBP1.frequency, wc);
+      set(wBP2.frequency, Math.min(12000, wc * 1.9));
+      const wq = linMap(P.wQ.v, 0.7, 6);
+      set(wBP1.Q, wq); set(wBP2.Q, wq);
+      const wr = expMap(P.wRate.v, 0.4, 9);
+      set(wLfo1.frequency, wr); set(wLfo2.frequency, wr * 1.37);
+      set(wOut.gain, P.wLvl.v * 1.4);
+      wSrc1.set(P.wColor.v, now); wSrc2.set(clamp(P.wColor.v + 0.15), now);
+
+      // ветер
+      set(wnBP.frequency, expMap(P.wnCenter.v, 120, 1800), 2);
+      set(wnBP.Q, linMap(P.wnCenter.v, 0.6, 2.5));
+      set(wnOut.gain, 1.5);
+      wnSrc.set(P.wnColor.v, now);
+
+      // металл (тянется за тональностью)
+      const mb = mtof(36 + root + 12 * Math.min(2, Math.floor(P.mBase.v * 3)));
+      const sp = 0.5 + P.mSpread.v;
+      const q = expMap(P.mQ.v, 25, 250);
+      mF.forEach((m, i) => {
+        const f = Math.min(14000, mb * (1 + (ratios[i] - 1) * sp) * (1 + 0.008 * Math.sin(now * 0.13 * (i + 1))));
+        set(m.bp.frequency, f, 2.5);
+        set(m.bp.Q, q);
+        const bw = Math.max(1e-4, (f / q) / (sr / 2));
+        set(m.g.gain, (0.22 * P.mLvl.v) / Math.sqrt(bw) / (1 + i * 0.6));
+      });
+      mSrc.set(P.mColor.v, now);
+
+      // гранулы
+      const dens = expMap(P.gDens.v, 4, 60), size = expMap(P.gSize.v, 0.03, 0.3);
+      set(gOut.gain, P.gLvl.v * 1.5 / Math.sqrt(Math.max(1, dens * size)));
+
+      // задержки
+      const dt = expMap(P.dTime.v, 0.12, 0.9);
+      const dsc = lerp(0.3, 1, clamp(spaceV * 1.6));
+      dels.forEach(d => {
+        set(d.dl.delayTime, dt * d.r, 0.4);
+        set(d.fb.gain, linMap(P.dFb.v, 0.3, 0.82));
+        set(d.wet.gain, P.dWet.v * 0.8 * dsc);
+      });
+
+      // пространство
+      const pos = clamp(spaceV, 0, 1) * 3, i0 = Math.min(2, Math.floor(pos)), fr = pos - i0;
+      const wg = [0, 0, 0, 0];
+      wg[i0] = Math.cos(fr * Math.PI / 2);
+      wg[i0 + 1] = Math.sin(fr * Math.PI / 2);
+      const rw = (0.15 + 0.85 * P.rWet.v) * 0.9;
+      rG.forEach((g, k) => set(g.gain, rw * WET_SCALE[k] * wg[k], 0.2));
+      set(dryOut.gain, lerp(1, 0.6, spaceV * spaceV), 0.3);
+      set(shimIn.gain, shimV, 0.3);
+    }
+    // название лада для табло: ближайший по набору ступеней
+    function nearestMood() {
+      let best = 0, bs = -99;
+      MOODS.forEach((m, i) => {
+        let s = 0;
+        for (let p = 0; p < 12; p++) s += (cur[p] === m.pcs.includes(p)) ? 1 : -1;
+        if (s > bs) { bs = s; best = i; }
+      });
+      return best;
+    }
+
+    // ---------- анализ звука ----------
+    const spec = new Float32Array(an.frequencyBinCount);
+    const td = new Float32Array(an.fftSize);
+    const hist = { rms: [], cen: [], flat: [] };
+    function sample() {
+      an.getFloatFrequencyData(spec);
+      an.getFloatTimeDomainData(td);
+      let s2 = 0;
+      for (let i = 0; i < td.length; i++) s2 += td[i] * td[i];
+      const rms = Math.sqrt(s2 / td.length);
+      let num = 0, den = 0, ls = 0, cnt = 0;
+      for (let i = 2; i < spec.length; i++) {
+        const m = Math.pow(10, spec[i] / 20);
+        num += m * i; den += m; ls += Math.log(m + 1e-12); cnt++;
+      }
+      const cen = den > 1e-9 ? (num / den) * (sr / an.fftSize) : 0;
+      const flat = den > 1e-9 ? Math.exp(ls / cnt) / (den / cnt) : 0;
+      hist.rms.push(rms); hist.cen.push(cen); hist.flat.push(flat);
+      for (const k in hist) if (hist[k].length > 24) hist[k].shift();
+
+      if (rms > 1e-4) {
+        const target = lerp(0.045, 0.1, C);              // в минимализме тише, в максимализме громче
+        const g = clamp(trim.gain.value * Math.pow(target / rms, 0.15), 0.2, 5);
+        trim.gain.setTargetAtTime(g, ctx.currentTime, 2);
+      }
+    }
+
+    // ---------- «внутренний вкус»: дрейф параметров вокруг якорей ----------
+    const anchor = {};
+    NAMES.forEach(n => anchor[n] = P[n].v);
+    let S = 0.2, goodStreak = 0;
+    function decide() {
+      const rms = mean(hist.rms.slice(-8));
+      const cen = mean(hist.cen.slice(-8));
+      const flat = mean(hist.flat.slice(-8));
+      const cs = hist.cen.slice(-20);
+      const cm = mean(cs);
+      const cv = cm > 0 ? Math.sqrt(mean(cs.map(x => (x - cm) * (x - cm)))) / cm : 0;
+      const have = hist.rms.length >= 4;
+      const locked = ctx.currentTime < lockUntil;
+      const good = have && rms > 0.01 && rms < 0.3 && flat < 0.7 && cen > 40 && cen < 6000;
+
+      if (locked) {
+        NAMES.forEach(n => anchor[n] = lerp(anchor[n], P[n].v, 0.3));
+        S = 0.06;
+      } else if (good) {
+        NAMES.forEach(n => anchor[n] = lerp(anchor[n], P[n].v, 0.6));
+        S = Math.max(0.06, S * 0.93);
+        goodStreak += cv < 0.04 ? 2 : 1;
+      } else if (have) {
+        NAMES.forEach(n => anchor[n] = lerp(anchor[n], rnd(0.1, 0.9), 0.25));
+        S = Math.min(0.45, S * 1.12);
+        goodStreak = 0;
+      }
+      if (!locked && goodStreak > 6) {
+        S = Math.min(0.45, S * 1.6);
+        if (Math.random() < 0.35) NAMES.forEach(n => anchor[n] = lerp(anchor[n], rnd(0.1, 0.9), 0.5));
+        goodStreak = 3;
+      }
+      NAMES.forEach(n => {
+        P[n].t = clamp(anchor[n] + gauss() * S, 0.02, 0.98);
+        P[n].rate = 1 - Math.exp(-0.05 / (rnd(5, 11) * morphK));
+      });
+      setTimeout(decide, rnd(8, 14) * 1000);
+    }
+
+    // ---------- визуализация: данные для радиальной гистограммы ----------
+    const SHORT = { bass: 'бас-дрон', hum: 'гул', breath: 'дыхание', water: 'вода', wind: 'ветер', metal: 'металл',
+                    grain: 'гранулы', pad: 'пэды', bells: 'колокола', glass: 'стекло', muzak: 'музак',
+                    elevator: 'элеватор', micro: 'микро-мин.', glitch: 'глитч', arp: 'арпеджио', bseq: 'бас-секв.',
+                    ind: 'индастриал', dungeon: 'dungeon', berlin: 'берлин', lofi: 'lofi', krell: 'крелл' };
+    const vItems = [];
+    MAINS.forEach(n => vItems.push({ label: SHORT[n], group: 'main', val: () => W[n], tgt: () => WT[n] }));
+    TEXTS.forEach(n => vItems.push({ label: SHORT[n], group: 'tex', val: () => W[n], tgt: () => WT[n] }));
+    const noiseName = v => v < 0.3 ? 'корич.' : v < 0.7 ? 'розов.' : 'белый';
+    const vPar = (label, n, fmt) => vItems.push({ label, group: 'par', val: () => P[n].v, tgt: () => P[n].t, fmt });
+    vItems.push({ label: 'плотность', group: 'par', val: () => C, tgt: () => C });
+    vItems.push({ label: 'пространство', group: 'par', val: () => spaceV, tgt: () => spaceTarget });
+    vItems.push({ label: 'шиммер', group: 'par', val: () => shimV, tgt: () => shimTarget });
+    vPar('темп', 'padDens', v => Math.round(expMap(v, 68, 108)) + ' bpm');
+    vPar('яркость', 'padCut');
+    vPar('регистр', 'padOct');
+    vPar('эхо · время', 'dTime');
+    vPar('эхо · связь', 'dFb');
+    vPar('эхо · уровень', 'dWet');
+    vPar('реверб', 'rWet');
+    vPar('цвет воды', 'wColor', noiseName);
+    vPar('цвет ветра', 'wnColor', noiseName);
+    vPar('цвет металла', 'mColor', noiseName);
+    vPar('цвет дыхания', 'brColor', noiseName);
+    vPar('гранулы', 'gDens');
+    vPar('глитч', 'glDens');
+    const bytes = new Uint8Array(an.frequencyBinCount);
+    V.s = {
+      items: vItems, an, bytes,
+      rms: () => hist.rms.length ? hist.rms[hist.rms.length - 1] : 0,
+      hue: () => 190 + clamp(mean(hist.cen.slice(-4)) / 4000) * 100,
+      root: () => root, cur: () => cur,
+      note: () => NOTES[root], mood: () => MOODS[moodIdx].n,
+      lock: () => { const r = lockUntil - ctx.currentTime; return r > 0 ? clamp(r / lockTotal) : 0; }
+    };
+
+    // ---------- старт: тихий дрон, дальше всё плывёт само ----------
+    WT.bass = 0.85; WT.hum = 0.4; WT.wind = 0.4; mainHold = 1;
+    setTc();
+    spaceTarget = spaceV = rnd(0.3, 0.8); shimTarget = shimV = rnd(0, 0.4);
+    swapWave();
+    nextRetarget = ctx.currentTime + rnd(30, 45);
+    nextWave = ctx.currentTime + rnd(25, 45);
+
+    update();
+    setInterval(update, 50);
+    setInterval(grains, 50);
+    setInterval(ambTick, 100);
+    setInterval(sceneTick, 1000);
+    setInterval(sample, 500);
+    setTimeout(decide, 6000);
+
+    // для проверки в отладчике
+    window.__drift = {
+      like, dislike, retarget: () => retarget(false, false),
+      force: (n, v) => { WT[n] = v; W[n] = v; },
+      info: () => ({ W: { ...W }, WT: { ...WT }, C, root, mood: moodIdx, spaceV, shimV, scale: scL(), rms: hist.rms[hist.rms.length - 1], trim: trim.gain.value, t: ctx.currentTime })
+    };
+
+    document.getElementById('ui').classList.add('show');
+    infoEl.classList.add('show');
+    nameScene(2);
+  }
+
+  const el = document.getElementById('start');
+  el.addEventListener('click', () => { start(); el.classList.add('hide'); });
+})();
+</script>
+</body>
+</html>
