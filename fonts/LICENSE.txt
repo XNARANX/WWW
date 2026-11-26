@@ -1,0 +1,1 @@
+mono.woff: подмножество (латиница и кириллица) шрифта Liberation Mono, (c) Red Hat, Inc., лицензия SIL Open Font License 1.1: https://openfontlicense.org
